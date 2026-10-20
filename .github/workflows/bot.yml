@@ -22,7 +22,7 @@ jobs:
       RUN_SECONDS: "20100"      # 5س35د ثم إيقاف نظيف + لقطة أخيرة في قناة التخزين
       ALLOW_APPS: "0"           # لا تشغيل لتطبيقات Python/Node/PHP للمستخدمين على السيرفر
       PORT: "7860"              # منفذ الويب المحلي (نفس المنفذ في Public hostname بـ Cloudflare)
-      PUBLIC_DOMAIN: sawhost.de5.net   # دومين المنصة (روابط اللوحة وزر القائمة في البوت)
+      PUBLIC_DOMAIN: app.sawhost.de5.net   # دومين اللوحة وزر القائمة (يغطيه wildcard النفق، والاسم app محجوز في الكود)
       SITES_DOMAIN: sawhost.de5.net    # كل موقع على <slug>.sawhost.de5.net (يتطلب *.sawhost.de5.net في النفق)
       PYTHONUNBUFFERED: "1"
       PYTHONIOENCODING: utf-8
