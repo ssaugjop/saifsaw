@@ -147,6 +147,12 @@ def _client_key(req: web.Request) -> str:
         ip = req.headers.get("CF-Connecting-IP") or req.headers.get("X-Saw-Client-IP")
         if ip:
             return ip.strip()[:64]
+    elif os.getenv("RUN_MODE", "").lower() == "actions":
+        # GitHub Actions: السيرفر على 127.0.0.1 ولا يصله أحد إلا عبر Cloudflare Tunnel، وCloudflare تكتب
+        # CF-Connecting-IP بنفسها. (X-Saw-* لا تُصدَّق هنا إطلاقاً.)
+        ip = req.headers.get("CF-Connecting-IP")
+        if ip:
+            return ip.strip()[:64]
     xff = req.headers.get("X-Forwarded-For", "")
     if xff:
         return xff.split(",")[-1].strip()

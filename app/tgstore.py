@@ -681,14 +681,24 @@ async def link_channel(bot, chat_id: int) -> tuple[bool, str]:
         return False, "تعذّر الوصول للقناة. تأكد أنني مضاف فيها كمشرف وأن المعرّف صحيح."
     if getattr(chat, "type", "") not in ("channel", "supergroup"):
         return False, "الوجهة ليست قناة. أنشئ قناة خاصة وأضفني مشرفاً فيها."
+    step = "send"
     try:
         m = await bot.send_message(chat_id, "🔧 اختبار صلاحيات التخزين…", disable_notification=True)
+        step = "pin"
         await bot.pin_chat_message(chat_id, m.message_id, disable_notification=True)
+        step = "unpin"
         await bot.unpin_chat_message(chat_id, m.message_id)
+        step = "delete"
         await bot.delete_message(chat_id, m.message_id)
     except Exception as e:
-        return False, ("الصلاحيات ناقصة. فعّل لي: نشر الرسائل + تعديل رسائل الآخرين (للتثبيت) + حذف الرسائل.\n"
-                       f"({type(e).__name__})")
+        # نُظهر الخطوة الفاشلة ونص الخطأ الحقيقي (مقتطع) بدل رسالة «الصلاحيات ناقصة» العمياء:
+        # ValidationError مثلاً خطأ تحليل رد من المكتبة وليس نقص صلاحيات.
+        detail = (str(e) or "").replace("\n", " ")[:220]
+        kind = type(e).__name__
+        if kind in ("TelegramForbiddenError", "TelegramBadRequest"):
+            return False, ("الصلاحيات ناقصة. فعّل لي: نشر الرسائل + تعديل رسائل الآخرين (للتثبيت) + حذف الرسائل.\n"
+                           f"({step}: {kind}: {detail})")
+        return False, f"فشل فحص القناة عند الخطوة «{step}» — خطأ برمجي لا صلة له بالصلاحيات غالباً.\n({kind}: {detail})"
 
     # قناة فيها لقطة سابقة؟ اعتمدها (دون استعادة فوق البيانات الحيّة) بشرط أن يفكّ مفتاحنا تشفيرها.
     man = mid = None

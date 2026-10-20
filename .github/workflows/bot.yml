@@ -21,6 +21,9 @@ jobs:
       RUN_MODE: actions
       RUN_SECONDS: "20100"      # 5س35د ثم إيقاف نظيف + لقطة أخيرة في قناة التخزين
       ALLOW_APPS: "0"           # لا تشغيل لتطبيقات Python/Node/PHP للمستخدمين على السيرفر
+      PORT: "7860"              # منفذ الويب المحلي (نفس المنفذ في Public hostname بـ Cloudflare)
+      PUBLIC_DOMAIN: sawhost.de5.net   # دومين المنصة (روابط اللوحة وزر القائمة في البوت)
+      SITES_DOMAIN: sawhost.de5.net    # كل موقع على <slug>.sawhost.de5.net (يتطلب *.sawhost.de5.net في النفق)
       PYTHONUNBUFFERED: "1"
       PYTHONIOENCODING: utf-8
       SQLITE_PATH: ${{ github.workspace }}/data/sawhost.db
@@ -41,11 +44,33 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: 3.5 تشغيل Cloudflare Tunnel (الدومين → الويب المحلي)
+        env:
+          TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}      # يقرأه cloudflared من البيئة (لا يظهر في سطر الأوامر)
+        run: |
+          if [ -z "$TUNNEL_TOKEN" ]; then
+            echo "CF_TUNNEL_TOKEN غير معيّن — لن يعمل الدومين (البوت يعمل بدون الويب)."
+            exit 0
+          fi
+          curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --no-autoupdate --loglevel info run > /tmp/cf.log 2>&1 &
+          # السجل الكامل لا يُطبع (المستودع عام): نطبع فقط هل اتصل النفق
+          for i in $(seq 1 30); do
+            if grep -q "Registered tunnel connection" /tmp/cf.log 2>/dev/null; then
+              echo "✅ النفق متصل"; exit 0
+            fi
+            sleep 2
+          done
+          echo "⚠️ لم يتأكد اتصال النفق خلال 60 ثانية (قد يتصل لاحقاً)."
+
       - name: 4. تشغيل البوت
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           STORAGE_CHANNEL_ID: ${{ secrets.STORAGE_CHANNEL_ID }}   # اختياري (انظر GITHUB_ACTIONS.md)
+          ADMIN_WEB_USER: ${{ secrets.ADMIN_WEB_USER }}           # اختياري: دخول الأدمن بكلمة مرور
+          ADMIN_PASS_HASH: ${{ secrets.ADMIN_PASS_HASH }}         # اختياري
         run: |
           START=$(date +%s)
           set +e

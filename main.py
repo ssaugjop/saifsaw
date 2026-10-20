@@ -12,7 +12,7 @@ Webhook Piggybacking: handle_in_background=False (طبقة أمان إضافية
 أوضاع التشغيل (RUN_MODE):
   webhook  (الافتراضي)  HuggingFace Space: ويب هوك + لوحة ويب + استضافة مواقع.
   polling               تطوير محلي فقط.
-  actions               GitHub Actions: Polling فقط، يعمل RUN_SECONDS ثم يتوقف بنظافة بعد حفظ لقطة
+  actions               GitHub Actions: Polling للبوت + ويب على localhost عبر Cloudflare Tunnel، يعمل RUN_SECONDS ثم يتوقف بنظافة بعد حفظ لقطة
                         في قناة التخزين، ويُسلّم الشعلة لدورة جديدة (انظر .github/workflows/bot.yml).
 
 التخزين الدائم: app/tgstore.py — لقطات مشفّرة في قناة تلجرام خاصة تُستعاد تلقائياً عند الإقلاع.
@@ -186,17 +186,20 @@ async def _security_headers(req: web.Request, handler):
     return resp
 
 
-def create_app() -> web.Application:
+def create_app(web_only: bool = False) -> web.Application:
+    """web_only=True (وضع GitHub Actions): الويب فقط — بلا ويب هوك ولا خطافات إقلاع/إغلاق
+    (الإقلاع والإغلاق يديرهما _run_actions بنفسه، والبوت يعمل بـ Polling)."""
     cfg = get_cfg()
     app = web.Application(client_max_size=MAX_UPLOAD + 8 * 1024 * 1024, middlewares=[_security_headers])
 
-    # 1) Webhook الخاص بالبوت (Piggybacking - handle_in_background=False)
-    SimpleRequestHandler(
-        dispatcher=get_dp(), bot=get_bot(),
-        secret_token=cfg.webhook_secret,
-        handle_in_background=False,   # ← يضمن أن الرد يُرسَل ضمن نفس HTTP response
-    ).register(app, path=cfg.webhook_path)
-    setup_application(app, get_dp(), bot=get_bot())
+    if not web_only:
+        # 1) Webhook الخاص بالبوت (Piggybacking - handle_in_background=False)
+        SimpleRequestHandler(
+            dispatcher=get_dp(), bot=get_bot(),
+            secret_token=cfg.webhook_secret,
+            handle_in_background=False,   # ← يضمن أن الرد يُرسَل ضمن نفس HTTP response
+        ).register(app, path=cfg.webhook_path)
+        setup_application(app, get_dp(), bot=get_bot())
 
     # 1.2) مسار الصحة لـ UptimeRobot (GET + HEAD) — قبل الـ catch-all
     app.router.add_get("/health", _health)
@@ -213,8 +216,9 @@ def create_app() -> web.Application:
     # 3) استضافة المواقع + روابط التحميل (catch-all - يجب أن يكون آخر شيء يُسجَّل)
     register_routing(app)
 
-    app.on_startup.append(_on_startup)
-    app.on_shutdown.append(_on_shutdown)
+    if not web_only:
+        app.on_startup.append(_on_startup)
+        app.on_shutdown.append(_on_shutdown)
     return app
 
 
@@ -243,6 +247,29 @@ async def _run_actions() -> None:
     except Exception as e:
         log.warning("set_my_commands failed: %s", e)
     tgstore.start(bot)
+
+    # الويب (لوحة /panel + استضافة المواقع) على localhost فقط: يصل إليه الزوار عبر Cloudflare Tunnel
+    # (خطوة cloudflared في bot.yml). لتعطيله: WEB_ENABLED=0
+    runner: web.AppRunner | None = None
+    cfg = get_cfg()
+    if os.getenv("WEB_ENABLED", "1") != "0":
+        try:
+            runner = web.AppRunner(create_app(web_only=True), access_log=None)
+            await runner.setup()
+            await web.TCPSite(runner, "127.0.0.1", cfg.port).start()
+            tgstore.ci(f"الويب يعمل على المنفذ {cfg.port} (عبر النفق).")
+        except Exception as e:
+            runner = None
+            log.warning("web server failed to start: %s", e)
+            tgstore.ci(f"تعذّر تشغيل الويب: {type(e).__name__}")
+        if cfg.public_url.startswith("https://"):
+            try:
+                await bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(text="🖥 اللوحة", web_app=WebAppInfo(url=cfg.public_url + "/panel/")),
+                )
+            except Exception as e:
+                log.warning("set_chat_menu_button failed: %s", e)
+
     tgstore.ci(f"البوت يعمل (polling) لمدة {run_seconds // 60} دقيقة ثم يسلّم الشعلة.")
 
     async def _timer() -> None:
@@ -258,6 +285,11 @@ async def _run_actions() -> None:
                                allowed_updates=dp.resolve_used_update_types())
     finally:
         timer.cancel()
+        if runner is not None:
+            try:
+                await runner.cleanup()
+            except Exception as e:
+                log.warning("web cleanup failed: %s", e)
         await tgstore.stop(bot, final_save=True)
         await close_db()
         await bot.session.close()
