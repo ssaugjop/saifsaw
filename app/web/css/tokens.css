@@ -1,0 +1,134 @@
+/* ============================================================================
+   Saw Host — design tokens
+   Identity: navy chrome (from the logo's dark field) · cobalt action colour ·
+   silver text on navy. Flat surfaces, hairline borders, no glows, no gradients.
+   Light is the default; dark follows the system or the user's choice.
+   ========================================================================== */
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --surface-2: #f8fafd;
+  --surface-3: #eef2f8;
+  --line: #e0e6ef;
+  --line-strong: #c9d3e2;
+
+  /* Text */
+  --ink: #0d1b2e;
+  --ink-2: #41526a;
+  --mute: #5f6f86;
+  --faint: #8695ab;
+
+  /* Brand */
+  --primary: #1f5fe0;
+  --primary-hover: #194fbd;
+  --primary-press: #143f98;
+  --primary-soft: #e8f0fe;
+  --primary-line: #b9cffa;
+  --on-primary: #ffffff;
+
+  /* Navy chrome (sidebar, hero panels) — identical in both themes */
+  --navy-950: #070f1d;
+  --navy-900: #0a1628;
+  --navy-800: #0f2038;
+  --navy-700: #17304f;
+  --navy-600: #24436b;
+  --silver: #c7d2e2;
+  --silver-2: #93a3bb;
+
+  /* Status */
+  --ok: #0f7b55;       --ok-soft: #e2f5ec;   --ok-line: #b5e3cd;
+  --warn: #a65a00;     --warn-soft: #fdf0d9; --warn-line: #f1d49b;
+  --bad: #c0302b;      --bad-soft: #fce9e7;  --bad-line: #f3c0bb;
+  --info: #1f5fe0;     --info-soft: #e8f0fe;
+  --gold: #b78322;     --gold-soft: #faf1dc;
+
+  /* Code */
+  --code-bg: #0d1829;
+  --code-ink: #d7e2f2;
+
+  /* Shadows (floating things only) */
+  --shadow-pop: 0 10px 30px rgba(10, 22, 40, .14), 0 2px 6px rgba(10, 22, 40, .08);
+  --shadow-dialog: 0 24px 64px rgba(10, 22, 40, .28), 0 4px 12px rgba(10, 22, 40, .12);
+  --focus: 0 0 0 3px rgba(31, 95, 224, .28);
+
+  /* Type */
+  --f-ui: "IBM Plex Sans Arabic", "Noto Sans Arabic", "Segoe UI", Tahoma, system-ui, -apple-system, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+
+  /* Radii: hierarchy, not one value everywhere */
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+
+  /* Layout */
+  --side-w: 268px;
+  --top-h: 60px;
+  --tab-h: 62px;
+  --page-max: 1180px;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #09111f;
+    --surface: #0f1a2d;
+    --surface-2: #132039;
+    --surface-3: #182845;
+    --line: #1d2c46;
+    --line-strong: #2b3f60;
+    --ink: #e7edf7;
+    --ink-2: #aab9cf;
+    --mute: #8798b2;
+    --faint: #62738f;
+    --primary: #5b95f5;
+    --primary-hover: #7aaaf7;
+    --primary-press: #94bbf9;
+    --primary-soft: rgba(91, 149, 245, .14);
+    --primary-line: rgba(91, 149, 245, .4);
+    --on-primary: #06142b;
+    --ok: #4fd1a0;  --ok-soft: rgba(79, 209, 160, .13);  --ok-line: rgba(79, 209, 160, .35);
+    --warn: #f0b955; --warn-soft: rgba(240, 185, 85, .13); --warn-line: rgba(240, 185, 85, .35);
+    --bad: #ff8a84;  --bad-soft: rgba(255, 138, 132, .13); --bad-line: rgba(255, 138, 132, .35);
+    --info: #7aaaf7; --info-soft: rgba(91, 149, 245, .14);
+    --gold: #e0b45c; --gold-soft: rgba(224, 180, 92, .13);
+    --code-bg: #08111f;
+    --shadow-pop: 0 10px 30px rgba(0, 0, 0, .5), 0 2px 6px rgba(0, 0, 0, .35);
+    --shadow-dialog: 0 24px 64px rgba(0, 0, 0, .6), 0 4px 12px rgba(0, 0, 0, .4);
+    --focus: 0 0 0 3px rgba(91, 149, 245, .35);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #09111f;
+  --surface: #0f1a2d;
+  --surface-2: #132039;
+  --surface-3: #182845;
+  --line: #1d2c46;
+  --line-strong: #2b3f60;
+  --ink: #e7edf7;
+  --ink-2: #aab9cf;
+  --mute: #8798b2;
+  --faint: #62738f;
+  --primary: #5b95f5;
+  --primary-hover: #7aaaf7;
+  --primary-press: #94bbf9;
+  --primary-soft: rgba(91, 149, 245, .14);
+  --primary-line: rgba(91, 149, 245, .4);
+  --on-primary: #06142b;
+  --ok: #4fd1a0;  --ok-soft: rgba(79, 209, 160, .13);  --ok-line: rgba(79, 209, 160, .35);
+  --warn: #f0b955; --warn-soft: rgba(240, 185, 85, .13); --warn-line: rgba(240, 185, 85, .35);
+  --bad: #ff8a84;  --bad-soft: rgba(255, 138, 132, .13); --bad-line: rgba(255, 138, 132, .35);
+  --info: #7aaaf7; --info-soft: rgba(91, 149, 245, .14);
+  --gold: #e0b45c; --gold-soft: rgba(224, 180, 92, .13);
+  --code-bg: #08111f;
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, .5), 0 2px 6px rgba(0, 0, 0, .35);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, .6), 0 4px 12px rgba(0, 0, 0, .4);
+  --focus: 0 0 0 3px rgba(91, 149, 245, .35);
+}

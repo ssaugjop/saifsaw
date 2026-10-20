@@ -1,0 +1,68 @@
+name: SAWHost Bot (Self-Relay)
+
+on:
+  workflow_dispatch:            # التشغيل اليدوي الأول (زر Run workflow) + التسليم الذاتي
+  schedule:
+    - cron: '17 */5 * * *'      # حارس احتياطي: يُعيد التشغيل إن انقطعت السلسلة لأي سبب
+
+concurrency:
+  group: sawhost-bot
+  cancel-in-progress: false     # لا نقتل النسخة العاملة: الدورة الجديدة تنتظر دورها (لا تعارض getUpdates)
+
+permissions:
+  actions: write                # ليستطيع gh workflow run تشغيل الدورة التالية
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      RUN_MODE: actions
+      RUN_SECONDS: "20100"      # 5س35د ثم إيقاف نظيف + لقطة أخيرة في قناة التخزين
+      ALLOW_APPS: "0"           # لا تشغيل لتطبيقات Python/Node/PHP للمستخدمين على السيرفر
+      PYTHONUNBUFFERED: "1"
+      PYTHONIOENCODING: utf-8
+      SQLITE_PATH: ${{ github.workspace }}/data/sawhost.db
+      STORAGE_ROOT: ${{ github.workspace }}/data/sites
+      BACKUPS_ROOT: ${{ github.workspace }}/data/backups
+    steps:
+      - name: 1. جلب الملفات
+        uses: actions/checkout@v4
+
+      - name: 2. تجهيز بايثون
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 3. تثبيت المكاتب
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 4. تشغيل البوت
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          STORAGE_CHANNEL_ID: ${{ secrets.STORAGE_CHANNEL_ID }}   # اختياري (انظر GITHUB_ACTIONS.md)
+        run: |
+          START=$(date +%s)
+          set +e
+          timeout --signal=INT --kill-after=90 20400s python main.py
+          CODE=$?
+          set -e
+          echo "ELAPSED=$(( $(date +%s) - START ))" >> "$GITHUB_ENV"
+          echo "انتهت العملية بالرمز $CODE"
+          exit 0
+
+      - name: 5. تسليم الشعلة للدورة التالية
+        if: ${{ !cancelled() }}              # إلغاء يدوي من تبويب Actions يوقف السلسلة
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${ELAPSED:-0}" -lt 300 ]; then
+            echo "العملية توقفت خلال أقل من 5 دقائق (إعدادات خاطئة؟) — لن أعيد التشغيل تلقائياً، وسيتولى cron الأمر."
+            exit 0
+          fi
+          gh workflow run bot.yml --ref "${{ github.ref_name }}"
