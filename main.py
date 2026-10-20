@@ -285,6 +285,11 @@ async def _run_actions() -> None:
                                allowed_updates=dp.resolve_used_update_types())
     finally:
         timer.cancel()
+        try:                                  # أوقف تطبيقات المستخدمين بنظافة قبل إغلاق الويب والقاعدة
+            import app.process_manager as pm
+            await pm.stop_all()
+        except Exception as e:
+            log.warning("stop_all failed: %s", e)
         if runner is not None:
             try:
                 await runner.cleanup()
