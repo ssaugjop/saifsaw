@@ -20,18 +20,21 @@ jobs:
     env:
       RUN_MODE: actions
       RUN_SECONDS: "20100"      # 5س35د ثم إيقاف نظيف + لقطة أخيرة في قناة التخزين
-      ALLOW_APPS: "0"           # لا تشغيل لتطبيقات Python/Node/PHP للمستخدمين على السيرفر
+      ALLOW_APPS: "auto"        # auto = تُفعَّل تطبيقات Python/Node/PHP فقط إن عمل البوت كـ root (عزل UID لكل موقع). ضع "0" لإيقافها فوراً
       PORT: "7860"              # منفذ الويب المحلي (نفس المنفذ في Public hostname بـ Cloudflare)
       PUBLIC_DOMAIN: app.sawhost.de5.net   # دومين اللوحة وزر القائمة (يغطيه wildcard النفق، والاسم app محجوز في الكود)
       SITES_DOMAIN: sawhost.de5.net    # كل موقع على <slug>.sawhost.de5.net (يتطلب *.sawhost.de5.net في النفق)
       PYTHONUNBUFFERED: "1"
       PYTHONIOENCODING: utf-8
-      SQLITE_PATH: ${{ github.workspace }}/data/sawhost.db
-      STORAGE_ROOT: ${{ github.workspace }}/data/sites
-      BACKUPS_ROOT: ${{ github.workspace }}/data/backups
+      PYTHONDONTWRITEBYTECODE: "1"
+      SQLITE_PATH: /opt/sawhost/db/sawhost.db      # خارج مجلد المشروع: صلاحياته تُضبط في خطوة 3.7
+      STORAGE_ROOT: /opt/sawhost/sites
+      BACKUPS_ROOT: /opt/sawhost/backups
     steps:
       - name: 1. جلب الملفات
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # لا يبقى توكن GitHub داخل .git/config
 
       - name: 2. تجهيز بايثون
         uses: actions/setup-python@v5
@@ -64,6 +67,35 @@ jobs:
           done
           echo "⚠️ لم يتأكد اتصال النفق خلال 60 ثانية (قد يتصل لاحقاً)."
 
+      - name: 3.7 عزل تطبيقات المستخدمين (صلاحيات + شبكة + /proc)
+        run: |
+          if ! sudo -n -E true 2>/dev/null; then
+            echo "sudo غير متاح — سيعمل البوت بدون عزل وتبقى التطبيقات الديناميكية معطّلة."
+            exit 0
+          fi
+          # مجلدات البيانات: القاعدة والنسخ والسجلات للـ root فقط، والمواقع يعبرها المستخدمون (711)
+          sudo mkdir -p /opt/sawhost/db /opt/sawhost/sites /opt/sawhost/backups /opt/sawhost/logs
+          sudo chmod 755 /opt/sawhost
+          sudo chmod 700 /opt/sawhost/db /opt/sawhost/backups /opt/sawhost/logs
+          sudo chmod 711 /opt/sawhost/sites
+          # لا يرى مستخدم التطبيق مجلد المشغّل ولا عمليات الآخرين
+          sudo chmod 700 /home/runner || true
+          sudo mount -o remount,hidepid=2 /proc || echo "تعذّر hidepid (غير حرج)."
+          # جدار ناري للـ UID المخصصة للمواقع (100000-159999): بلا loopback (إلا DNS) ولا شبكات داخلية
+          # ولا بيانات وصف السحابة ولا SMTP، والإنترنت العام مسموح.
+          R="100000-159999"
+          O="-m owner --uid-owner $R"
+          sudo iptables -A OUTPUT $O -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+          sudo iptables -A OUTPUT $O -d 127.0.0.53 -p udp --dport 53 -j ACCEPT
+          sudo iptables -A OUTPUT $O -d 127.0.0.53 -p tcp --dport 53 -j ACCEPT
+          for NET in 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 168.63.129.16/32; do
+            sudo iptables -A OUTPUT $O -d $NET -j REJECT
+          done
+          sudo iptables -A OUTPUT $O -p tcp -m multiport --dports 25,465,587,2525 -j REJECT
+          sudo ip6tables -A OUTPUT $O -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || true
+          sudo ip6tables -A OUTPUT $O -j REJECT || true
+          echo "✅ العزل جاهز"
+
       - name: 4. تشغيل البوت
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
@@ -74,7 +106,12 @@ jobs:
         run: |
           START=$(date +%s)
           set +e
-          timeout --signal=INT --kill-after=90 20400s python main.py
+          if sudo -n -E true 2>/dev/null; then
+            # root ليعمل عزل UID لكل موقع (timeout داخل sudo ليصل SIGINT مباشرة لبايثون)
+            sudo -E env "PATH=$PATH" timeout --signal=INT --kill-after=90 20400s python main.py
+          else
+            timeout --signal=INT --kill-after=90 20400s python main.py
+          fi
           CODE=$?
           set -e
           echo "ELAPSED=$(( $(date +%s) - START ))" >> "$GITHUB_ENV"
