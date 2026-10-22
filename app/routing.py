@@ -131,23 +131,32 @@ async def _static_404(req: web.Request, site) -> web.StreamResponse:
     return web.Response(status=404, content_type="text/html", text="<h2>404 — الصفحة غير موجودة.</h2>")
 
 
-async def _serve_static(req: web.Request, site, tail: str) -> web.StreamResponse:
+async def _serve_static(req: web.Request, site, tail: str, sub: str = "") -> web.StreamResponse:
     if req.method not in ("GET", "HEAD"):
         return web.Response(status=405, text="Method Not Allowed", headers={"Allow": "GET, HEAD"})
     rel = (tail or "").lstrip("/")
     if _blocked_path(rel):
         return await _static_404(req, site)
 
+    def _res(r: str) -> Path:                     # sub = مجلد ناتج البناء (dist/build/out) لمواقع Node المبنية
+        return Storage.resolve(site.id, f"{sub}/{r}" if (sub and r) else (sub or r))
+
+    async def _home() -> Path | None:
+        if sub:
+            h = _res("index.html")
+            return h if h.is_file() else None
+        return await Storage.resolve_homepage(site.id)
+
     target: Path | None
     if not rel:
-        target = await Storage.resolve_homepage(site.id)
+        target = await _home()
         if not target:
             return web.Response(status=404, content_type="text/html", text=(
                 "<h2>404 — لم يُعثَر على أي صفحة رئيسية بجذر الموقع.</h2>"
                 "<p>ارفع أي ملف HTML بجذر الموقع (أياً كان اسمه) وسيُعرَض تلقائياً.</p>"))
     else:
         try:
-            target = Storage.resolve(site.id, rel)
+            target = _res(rel)
         except Exception:
             return web.Response(status=400, text="مسار غير صالح.")
         if target.is_dir():
@@ -156,7 +165,7 @@ async def _serve_static(req: web.Request, site, tail: str) -> web.StreamResponse
     if target is None or not target.is_file():
         last = rel.rsplit("/", 1)[-1]
         if _SPA_FALLBACK and rel and "." not in last:
-            home = await Storage.resolve_homepage(site.id)
+            home = await _home()
             if home and home.is_file():
                 return await _static_file(req, home)
         return await _static_404(req, site)
@@ -266,6 +275,10 @@ async def _serve_slug(req: web.Request, slug: str, tail: str) -> web.Response:
     if site.status not in (SiteStatus.RUNNING, SiteStatus.DEPLOYING):
         return web.Response(status=503, content_type="text/html",
             text="<h2>⏸ هذا الموقع متوقف حالياً. شغّله من البوت أولاً.</h2>")
+
+    built = pm.static_dir(Storage.site_root(site.id)) if site.kind == SiteKind.NODE else None
+    if built:                                     # موقع React/Vue/Vite مبني: يُخدَم من مجلد البناء كملفات ثابتة
+        return await _serve_static(req, site, tail, built)
 
     # لم تُشغَّل بعد أو ما زالت قيد النشر: نُطلِق المحاولة بالخلفية (إن لم
     # تكن جارية أصلاً) ونعرض صفحة انتظار تُحدِّث نفسها تلقائياً كل 3 ثوانٍ،
