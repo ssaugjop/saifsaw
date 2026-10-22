@@ -226,6 +226,12 @@ def _unpack_db(gz: bytes) -> None:
         pass
 
 
+# مجلدات تُعاد صناعتها عند تشغيل التطبيق (مكتبات وكاش وبناء): لا تُحفظ في لقطات تيليجرام
+# كي لا تتضخم اللقطة ولا تُرفع من جديد كل دورة بسبب تغيّر ملفات الكاش.
+_SNAP_SKIP_DIRS = frozenset({"node_modules", ".npm", ".cache", ".local", "__pycache__", ".venv", "venv",
+                             ".git", ".gradle", ".composer", "vendor_cache"})
+
+
 def _sites_sig() -> tuple[str, int]:
     root = _sites_root()
     if not root.is_dir():
@@ -233,7 +239,7 @@ def _sites_sig() -> tuple[str, int]:
     h = hashlib.sha1()
     total = 0
     for dp, dns, fns in os.walk(root):
-        dns.sort()
+        dns[:] = sorted(d for d in dns if d not in _SNAP_SKIP_DIRS)
         for fn in sorted(fns):
             fp = os.path.join(dp, fn)
             try:
@@ -251,8 +257,11 @@ def _pack_sites() -> bytes | None:
         return None
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=3) as tar:
+        def _flt(ti: tarfile.TarInfo):
+            parts = ti.name.split("/")
+            return None if any(x in _SNAP_SKIP_DIRS for x in parts) else ti
         for entry in sorted(root.iterdir()):
-            tar.add(str(entry), arcname="sites/" + entry.name)
+            tar.add(str(entry), arcname="sites/" + entry.name, filter=_flt)
     return buf.getvalue()
 
 
