@@ -178,6 +178,7 @@ class SiteKind(str, enum.Enum):
     STATIC = "static"   # ملفات HTML/CSS/JS ثابتة - تُخدَم مباشرة بلا عملية منفصلة
     PYTHON = "python"   # تطبيق Python (main.py/app.py + requirements.txt) - subprocess معزول
     NODE   = "node"     # تطبيق Node.js (package.json) - subprocess معزول
+    PHP    = "php"      # تطبيق PHP (index.php / composer.json) - php -S معزول
 
 
 class Site(Base, _ID, _TS):
