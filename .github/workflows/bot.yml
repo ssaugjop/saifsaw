@@ -1,26 +1,74 @@
 name: SAWHost Bot (Self-Relay)
 
-on:
-  workflow_dispatch:            # التشغيل اليدوي الأول (زر Run workflow) + التسليم الذاتي
-  schedule:
-    - cron: '17 */5 * * *'      # حارس احتياطي: يُعيد التشغيل إن انقطعت السلسلة لأي سبب
+# ─────────────────────────────────────────────────────────────────────────────
+# تصميم "لا يتوقف" — ثلاث طبقات تعمل معاً:
+#   1) داخل الدورة: حلقة إشراف تعيد تشغيل البوت فوراً عند أي انهيار (لا تنتظر انتهاء الدورة).
+#   2) بين الدورات: تسليم الشعلة بإعادة محاولة + وظيفة handover مستقلة تعمل حتى لو ماتت وظيفة run.
+#   3) من الخارج: Cloudflare Worker (انظر watchdog.js) يفحص كل دقيقتين ويشغّل/يعيد التشغيل
+#      إن لم توجد دورة حيّة أو توقّف البوت عن الرد، ولا يعتمد على cron الخاص بـ GitHub.
+# إيقاف السلسلة عمداً: Settings ← Secrets and variables ← Actions ← Variables ← BOT_ENABLED = 0
+# ─────────────────────────────────────────────────────────────────────────────
 
-concurrency:
-  group: sawhost-bot
-  cancel-in-progress: false     # لا نقتل النسخة العاملة: الدورة الجديدة تنتظر دورها (لا تعارض getUpdates)
+on:
+  workflow_dispatch:
+    inputs:
+      handover:
+        description: "تسليم تلقائي من الدورة السابقة (لا تغيّره يدوياً)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: '*/20 * * * *'      # حارس احتياطي ثانٍ: يتجاهل نفسه إن كانت السلسلة حيّة
 
 permissions:
   actions: write                # ليستطيع gh workflow run تشغيل الدورة التالية
   contents: read
 
 jobs:
-  run:
+  # ── يقرر هل نبدأ دورة جديدة (لتشغيلات cron فقط؛ اليدوي والتسليم يبدآن دائماً) ──
+  guard:
+    if: ${{ vars.BOT_ENABLED != '0' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 5
+    outputs:
+      start: ${{ steps.chk.outputs.start }}
+    steps:
+      - id: chk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != "schedule" ]; then
+            echo "start=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          N=$(gh api "repos/$REPO/actions/workflows/bot.yml/runs?per_page=30" \
+              --jq "[.workflow_runs[] | select(.id != $RUN_ID) | select(.status==\"in_progress\" or .status==\"queued\" or .status==\"waiting\" or .status==\"pending\" or .status==\"requested\")] | length" 2>/dev/null || true)
+          N=${N:-0}
+          if [ "$N" -gt 0 ]; then
+            echo "السلسلة حيّة ($N دورة نشطة) — لا حاجة لدورة جديدة."
+            echo "start=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "لا توجد دورة نشطة — نبدأ."
+            echo "start=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  run:
+    needs: guard
+    if: ${{ needs.guard.outputs.start == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    concurrency:
+      group: sawhost-bot
+      cancel-in-progress: false   # لا نقتل النسخة العاملة: الدورة الجديدة تنتظر دورها (لا تعارض getUpdates)
+    outputs:
+      elapsed: ${{ steps.bot.outputs.elapsed }}
     env:
       RUN_MODE: actions
-      RUN_SECONDS: "20100"      # 5س35د ثم إيقاف نظيف + لقطة أخيرة في قناة التخزين
-      ALLOW_APPS: "auto"        # auto = تُفعَّل تطبيقات Python/Node/PHP فقط إن عمل البوت كـ root (عزل UID لكل موقع). ضع "0" لإيقافها فوراً
+      RUN_SECONDS: "20100"      # يُعاد حسابه داخل حلقة الإشراف: الوقت المتبقي - 300 ثانية
+      ALLOW_APPS: "auto"        # auto = تُفعَّل تطبيقات Python/Node/PHP فقط إن عمل البوت كـ root. ضع "0" لإيقافها فوراً
+      APP_MAX_MEMORY_MB: "1024" # حد ذاكرة كل تطبيق مستخدم
+      APP_IDLE_TIMEOUT: "21600" # إيقاف التطبيق الخامل بعد 6 ساعات بلا زيارة (0 = أبداً)
       PORT: "7860"              # منفذ الويب المحلي (نفس المنفذ في Public hostname بـ Cloudflare)
       PUBLIC_DOMAIN: app.sawhost.de5.net   # دومين اللوحة وزر القائمة (يغطيه wildcard النفق، والاسم app محجوز في الكود)
       SITES_DOMAIN: sawhost.de5.net    # كل موقع على <slug>.sawhost.de5.net (يتطلب *.sawhost.de5.net في النفق)
@@ -44,8 +92,11 @@ jobs:
 
       - name: 3. تثبيت المكاتب
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+          for i in 1 2 3; do
+            pip install --upgrade pip && pip install --retries 5 -r requirements.txt && exit 0
+            echo "فشل التثبيت (محاولة $i) — إعادة المحاولة"; sleep 10
+          done
+          exit 1
 
       - name: 3.5 تشغيل Cloudflare Tunnel (الدومين → الويب المحلي)
         env:
@@ -55,9 +106,14 @@ jobs:
             echo "CF_TUNNEL_TOKEN غير معيّن — لن يعمل الدومين (البوت يعمل بدون الويب)."
             exit 0
           fi
-          curl -fsSL -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          curl -fsSL --retry 6 --retry-delay 3 -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared
-          nohup ./cloudflared tunnel --no-autoupdate --loglevel info run > /tmp/cf.log 2>&1 &
+          # حلقة إشراف: إن مات cloudflared لأي سبب يُعاد تشغيله خلال 3 ثوانٍ
+          printf '%s\n' '#!/bin/bash' 'while true; do' \
+            "  $PWD/cloudflared tunnel --no-autoupdate --loglevel info run >> /tmp/cf.log 2>&1" \
+            '  echo "cloudflared توقف — إعادة التشغيل بعد 3 ثوانٍ" >> /tmp/cf.log' \
+            '  sleep 3' 'done' > /tmp/cf_supervisor.sh
+          nohup bash /tmp/cf_supervisor.sh > /dev/null 2>&1 &
           # السجل الكامل لا يُطبع (المستودع عام): نطبع فقط هل اتصل النفق
           for i in $(seq 1 30); do
             if grep -q "Registered tunnel connection" /tmp/cf.log 2>/dev/null; then
@@ -96,7 +152,8 @@ jobs:
           sudo ip6tables -A OUTPUT $O -j REJECT || true
           echo "✅ العزل جاهز"
 
-      - name: 4. تشغيل البوت
+      - name: 4. تشغيل البوت (مع إشراف وإعادة تشغيل تلقائية)
+        id: bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
@@ -105,26 +162,82 @@ jobs:
           ADMIN_PASS_HASH: ${{ secrets.ADMIN_PASS_HASH }}         # اختياري
         run: |
           START=$(date +%s)
+          DEADLINE=$(( START + 20400 ))       # 5س40د من بدء هذه الخطوة
+          FAST=0
           set +e
-          if sudo -n -E true 2>/dev/null; then
-            # root ليعمل عزل UID لكل موقع (timeout داخل sudo ليصل SIGINT مباشرة لبايثون)
-            sudo -E env "PATH=$PATH" timeout --signal=INT --kill-after=90 20400s python main.py
-          else
-            timeout --signal=INT --kill-after=90 20400s python main.py
-          fi
-          CODE=$?
+          while true; do
+            T0=$(date +%s)
+            LEFT=$(( DEADLINE - T0 ))
+            if [ "$LEFT" -lt 120 ]; then break; fi
+            # البوت يوقف نفسه بنظافة (مع لقطة أخيرة) قبل نهاية المهلة بخمس دقائق
+            export RUN_SECONDS=$(( LEFT - 300 ))
+            if [ "$RUN_SECONDS" -lt 60 ]; then RUN_SECONDS=60; fi
+            if sudo -n -E true 2>/dev/null; then
+              # root ليعمل عزل UID لكل موقع (timeout داخل sudo ليصل SIGINT مباشرة لبايثون)
+              sudo -E env "PATH=$PATH" timeout --signal=INT --kill-after=90 ${LEFT}s python main.py
+            else
+              timeout --signal=INT --kill-after=90 ${LEFT}s python main.py
+            fi
+            CODE=$?
+            UP=$(( $(date +%s) - T0 ))
+            echo "انتهت العملية بالرمز $CODE بعد ${UP} ثانية"
+            # نهاية مخطَّطة: خرج البوت نظيفاً بعد انتهاء مدته، أو قتله timeout عند المهلة
+            if [ "$CODE" -eq 0 ] && [ "$UP" -ge $(( RUN_SECONDS - 120 )) ]; then break; fi
+            if [ "$CODE" -eq 124 ] || [ "$CODE" -eq 137 ]; then break; fi
+            # انهيار: أعد التشغيل فوراً داخل نفس الدورة (انتظار أطول فقط عند الانهيارات السريعة المتكررة)
+            if [ "$UP" -lt 60 ]; then FAST=$(( FAST + 1 )); else FAST=0; fi
+            if [ "$FAST" -ge 3 ]; then WAIT=60; else WAIT=5; fi
+            echo "⚠️ انهيار — إعادة التشغيل بعد ${WAIT}ث (انهيارات سريعة متتالية: $FAST)"
+            sleep "$WAIT"
+          done
           set -e
-          echo "ELAPSED=$(( $(date +%s) - START ))" >> "$GITHUB_ENV"
-          echo "انتهت العملية بالرمز $CODE"
+          echo "elapsed=$(( $(date +%s) - START ))" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: 5. تسليم الشعلة للدورة التالية
-        if: ${{ !cancelled() }}              # إلغاء يدوي من تبويب Actions يوقف السلسلة
+      - name: 5. تسليم الشعلة للدورة التالية (مسار سريع بإعادة محاولة)
+        if: ${{ always() && vars.BOT_ENABLED != '0' }}      # حتى لو أُلغيت الدورة أو فشلت خطوة سابقة
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${ELAPSED:-0}" -lt 300 ]; then
-            echo "العملية توقفت خلال أقل من 5 دقائق (إعدادات خاطئة؟) — لن أعيد التشغيل تلقائياً، وسيتولى cron الأمر."
-            exit 0
+          for i in 1 2 3 4 5 6; do
+            if gh workflow run bot.yml --repo "$GITHUB_REPOSITORY" --ref "${{ github.ref_name }}" -f handover=true; then
+              echo "✅ تم تسليم الشعلة"; exit 0
+            fi
+            echo "فشل التسليم (محاولة $i) — إعادة المحاولة"; sleep $(( i * 10 ))
+          done
+          echo "⚠️ تعذّر التسليم من داخل الدورة — وظيفة handover والمراقب الخارجي سيتكفّلان."
+          exit 0
+
+  # ── شبكة أمان مستقلة: تعمل على سيرفر آخر حتى لو ماتت وظيفة run فجأة ──
+  handover:
+    needs: [guard, run]
+    if: ${{ always() && needs.guard.outputs.start == 'true' && vars.BOT_ENABLED != '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: تسليم الشعلة إن لم توجد دورة نشطة
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          REF: ${{ github.ref_name }}
+          ELAPSED: ${{ needs.run.outputs.elapsed }}
+        run: |
+          # انهيارات الإقلاع المتكررة: لا نغرق الحساب بدورات سريعة
+          if [ -n "$ELAPSED" ] && [ "$ELAPSED" -lt 300 ]; then
+            echo "الدورة انتهت خلال ${ELAPSED}ث — انتظار 3 دقائق قبل المحاولة التالية."
+            sleep 180
           fi
-          gh workflow run bot.yml --ref "${{ github.ref_name }}"
+          for i in 1 2 3 4 5 6; do
+            N=$(gh api "repos/$REPO/actions/workflows/bot.yml/runs?per_page=30" \
+                --jq "[.workflow_runs[] | select(.id != $RUN_ID) | select(.status==\"in_progress\" or .status==\"queued\" or .status==\"waiting\" or .status==\"pending\" or .status==\"requested\")] | length" 2>/dev/null || true)
+            N=${N:-0}
+            if [ "$N" -gt 0 ]; then
+              echo "✅ توجد دورة نشطة أو منتظرة — السلسلة حيّة."; exit 0
+            fi
+            if gh workflow run bot.yml --repo "$REPO" --ref "$REF" -f handover=true; then
+              echo "✅ تم تشغيل دورة جديدة"; exit 0
+            fi
+            sleep $(( i * 10 ))
+          done
+          exit 1
