@@ -798,7 +798,7 @@ class Subs:
 _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
 
 def _safe_kind(kind: str) -> SiteKind:
-    """detect_kind قد يُرجع 'php' وهو غير معرّف بـ SiteKind؛ نعامله كموقع ثابت بدل أن ينهار الإنشاء."""
+    """يحوّل نوع process_manager إلى SiteKind؛ أي قيمة غير معروفة تُعامل كموقع ثابت بدل أن ينهار الإنشاء."""
     try:
         return SiteKind(kind)
     except ValueError:
@@ -972,7 +972,7 @@ class Host:
         site = await Host.get(sid)
         if site.kind != SiteKind.STATIC:
             import app.process_manager as pm
-            await pm.stop_process(str(sid))
+            await pm.stop_process(str(sid), Storage.site_root(sid))
         return await Host._set_status(sid, SiteStatus.STOPPED)
 
     @staticmethod
