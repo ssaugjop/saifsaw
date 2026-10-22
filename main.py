@@ -20,6 +20,7 @@ Webhook Piggybacking: handle_in_background=False (طبقة أمان إضافية
 from __future__ import annotations
 import logging
 import os
+import time
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -164,8 +165,18 @@ async def _root_redirect(req: web.Request) -> web.Response:
     return await site_handler(req)
 
 
+# نبض البوت: آخر مرة نجح فيها اتصال حقيقي بخوادم تيليجرام. يقرؤه /health ليكشف التجمّد وانقطاع الاتصال
+# (إن علقت حلقة الأحداث لن يستجيب /health أصلاً، فيعيد المراقب الخارجي تشغيل الدورة).
+_HB = {"ok": time.time()}
+_HB_MAX_AGE = int(os.getenv("HEALTH_MAX_AGE", "600"))
+
+
 async def _health(req: web.Request) -> web.Response:
-    """مسار خفيف بلا مصادقة لمراقبة UptimeRobot — لا يلمس قاعدة البيانات."""
+    """مسار خفيف بلا مصادقة لمراقبة Cloudflare Worker/UptimeRobot — لا يلمس قاعدة البيانات."""
+    age = time.time() - _HB["ok"]
+    if age > _HB_MAX_AGE:
+        return web.Response(status=503, text=f"STALE {int(age)}s", content_type="text/plain",
+                            headers={"Cache-Control": "no-store"})
     return web.Response(text="OK", content_type="text/plain", headers={"Cache-Control": "no-store"})
 
 
@@ -279,12 +290,23 @@ async def _run_actions() -> None:
         if asyncio.iscoroutine(res):
             await res
 
+    async def _heartbeat() -> None:
+        while True:
+            try:
+                await asyncio.wait_for(bot.get_me(), timeout=20)
+                _HB["ok"] = time.time()
+            except Exception as e:
+                log.warning("heartbeat: %s", type(e).__name__)
+            await asyncio.sleep(60)
+
     timer = asyncio.create_task(_timer())
+    hb_task = asyncio.create_task(_heartbeat())
     try:
         await dp.start_polling(bot, handle_signals=True, close_bot_session=False,
                                allowed_updates=dp.resolve_used_update_types())
     finally:
         timer.cancel()
+        hb_task.cancel()
         try:                                  # أوقف تطبيقات المستخدمين بنظافة قبل إغلاق الويب والقاعدة
             import app.process_manager as pm
             await pm.stop_all()
