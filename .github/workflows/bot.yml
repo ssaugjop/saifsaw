@@ -7,6 +7,10 @@ name: SAWHost Bot (Self-Relay)
 #   3) مراقب خارجي: خدمة cron-job.org (بلا كود) تستدعي هذا الملف كل 5 دقائق بالمدخل watchdog=true،
 #      فتكشف الحارس أن السلسلة ماتت أو أن البوت لا يردّ على /health، وتشغّل/تعيد التشغيل بنفسها.
 # إيقاف السلسلة عمداً: Settings ← Secrets and variables ← Actions ← Variables ← BOT_ENABLED = 0
+#
+# تعديلات هذه النسخة (لا تغيّر السلوك):
+#   • تثبيت runs-on على ubuntu-24.04 بدل ubuntu-latest (الانتقال إلى Ubuntu 26 كسر الحارس بالرمز 126).
+#   • الحارس لم يعد يعتمد على python3: القرار يُحسب بـ gh --jq فقط (أقل اعتماداً على الصورة).
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -32,12 +36,13 @@ jobs:
   #    cron والمراقب الخارجي (watchdog=true) يفحصان أولاً: سلسلة حيّة؟ البوت يردّ؟ ──
   guard:
     if: ${{ vars.BOT_ENABLED != '0' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 8
     outputs:
       start: ${{ steps.chk.outputs.start }}
     steps:
       - id: chk
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -49,29 +54,21 @@ jobs:
           if [ "$EVENT" != "schedule" ] && [ "$WATCHDOG" != "true" ]; then
             echo "start=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          export RUNS_JSON
-          RUNS_JSON=$(gh api "repos/$REPO/actions/workflows/bot.yml/runs?per_page=30" 2>/dev/null || true)
-          if [ -z "$RUNS_JSON" ]; then
+          # الحكم يُحسب بـ jq داخل gh (بدون python). أي فشل في القراءة => نبدأ احتياطاً.
+          JQ='[.workflow_runs[]
+                | select(.id != (env.RUN_ID | tonumber))
+                | select(.status=="in_progress" or .status=="queued" or .status=="waiting" or .status=="pending" or .status=="requested")]
+              | if length == 0 then "NONE"
+                elif any(.[]; .status != "in_progress") then "WAITING"
+                else (sort_by(.created_at) | last) as $r
+                  | ((now - (($r.run_started_at // $r.created_at) | fromdateiso8601)) | floor) as $age
+                  | if $age < 600 then "YOUNG" else "CHECK " + ($r.id | tostring) end
+                end'
+          VERDICT=$(gh api "repos/$REPO/actions/workflows/bot.yml/runs?per_page=30" --jq "$JQ" 2>/dev/null || true)
+          if [ -z "$VERDICT" ]; then
             echo "تعذّر قراءة الدورات — نبدأ احتياطاً (concurrency يمنع التعارض)."
             echo "start=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          VERDICT=$(python3 - <<'PY'
-          import json, os, datetime
-          me = int(os.environ["RUN_ID"])
-          runs = json.loads(os.environ["RUNS_JSON"]).get("workflow_runs", [])
-          live = {"in_progress", "queued", "waiting", "pending", "requested"}
-          act = [r for r in runs if r["id"] != me and r["status"] in live]
-          if not act:
-              print("NONE")
-          elif any(r["status"] != "in_progress" for r in act):
-              print("WAITING")
-          else:
-              r = sorted(act, key=lambda x: x["created_at"])[-1]
-              t = datetime.datetime.fromisoformat((r.get("run_started_at") or r["created_at"]).replace("Z", "+00:00"))
-              age = int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())
-              print("YOUNG" if age < 600 else "CHECK %d" % r["id"])
-          PY
-          )
           echo "الحكم: $VERDICT"
           case "$VERDICT" in
             NONE)
@@ -83,6 +80,11 @@ jobs:
             YOUNG)
               echo "الدورة حديثة (أقل من 10 دقائق) — نمهلها للإقلاع."
               echo "start=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            CHECK*)
+              : ;;
+            *)
+              echo "حكم غير متوقع — نبدأ احتياطاً."
+              echo "start=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
           RID=${VERDICT#CHECK }
           for i in 1 2 3; do
@@ -101,7 +103,7 @@ jobs:
   run:
     needs: guard
     if: ${{ needs.guard.outputs.start == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 358
     concurrency:
       group: sawhost-bot
@@ -257,7 +259,7 @@ jobs:
   handover:
     needs: [guard, run]
     if: ${{ always() && needs.guard.outputs.start == 'true' && vars.BOT_ENABLED != '0' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: تسليم الشعلة إن لم توجد دورة نشطة
