@@ -75,8 +75,9 @@ TAB.files = async (ctx, S, box) => {
   const dirty = () => T.tabs.some(t => t.cur !== t.orig);
   const guard = e => { if (dirty()) { e.preventDefault(); e.returnValue = ""; } };
   window.addEventListener("beforeunload", guard);
+  window.__sawDirty = dirty;
   let ed = null;
-  ctx.onEnd = () => { window.removeEventListener("beforeunload", guard); if (ed) ed.destroy(); ed = null; $(".view") && $(".view").classList.remove("wide"); };
+  ctx.onEnd = () => { window.removeEventListener("beforeunload", guard); window.__sawDirty = null; if (ed) ed.destroy(); ed = null; $(".view") && $(".view").classList.remove("wide"); };
 
   setHTML(box, html`<div class="ide">
     <aside class="ide-side"><div class="ide-tools">
@@ -242,10 +243,12 @@ TAB.files = async (ctx, S, box) => {
   function showActive(line = 0) {
     const t = cur();
     if (ed) { ed.destroy(); ed = null; }
+    const ide = $(".ide");                       // الهاتف: عند فتح ملف تُخفى القائمة ويأخذ المحرر الشاشة (زر "الملفات" يعيدها)
+    if (ide) { ide.classList.toggle("has-file", !!t); ide.classList.remove("show-side"); }
     if (!t) { setHTML(work, html`<div class="ide-empty">${icon("code", "lg")}<b>اختر ملفاً لتعديله</b><p>افتح ملفاً من القائمة، أو أنشئ ملفاً جديداً.</p><div class="kbds"><span><kbd>Ctrl</kbd>+<kbd>S</kbd> حفظ</span><span><kbd>Ctrl</kbd>+<kbd>F</kbd> بحث</span><span><kbd>Ctrl</kbd>+<kbd>/</kbd> تعليق</span><span><kbd>Ctrl</kbd>+<kbd>D</kbd> تكرار سطر</span></div></div>`); return; }
     if (t.img) { setHTML(work, html`<div class="img-view"><img src="${siteUrl(S.site)}/${t.path.split("/").map(encodeURIComponent).join("/")}" alt="${t.name}"><p class="ltr">${t.name}</p></div>`); return; }
     const isHtml = /\.html?$/i.test(t.name);
-    setHTML(work, html`<div class="ide-bar"><span class="ltr path">${t.path}</span><span class="sp"></span>
+    setHTML(work, html`<div class="ide-bar"><button class="btn ghost sm ide-toggle" id="sidetoggle" type="button">${icon("folder", "sm")} الملفات</button><span class="ltr path">${t.path}</span><span class="sp"></span>
       ${isHtml || T.preview ? html`<button class="btn ghost sm" id="pvbtn" aria-pressed="${T.preview}" type="button">${icon("eye", "sm")} معاينة</button>` : ""}
       <button class="btn sm" id="savebtn" type="button" ${t.cur === t.orig ? "disabled" : ""}>${icon("save", "sm")} حفظ</button></div>
       <div class="ide-split ${T.preview ? "pv" : ""}"><div class="ide-ed" id="edhost"></div>
@@ -260,6 +263,7 @@ TAB.files = async (ctx, S, box) => {
     if (line) ed.gotoLine(line);
     if (matchMedia("(pointer:fine)").matches) ed.focus();
     $("#savebtn").onclick = save;
+    const stg = $("#sidetoggle"); if (stg) stg.onclick = () => { const i = $(".ide"); if (i) { i.classList.toggle("show-side"); if (i.classList.contains("show-side")) i.scrollIntoView({ block: "start", behavior: "smooth" }); } };
     const pvb = $("#pvbtn"); if (pvb) pvb.onclick = () => { T.preview = !T.preview; showActive(); };
     if (T.preview) {
       $("#pvr").onclick = () => { $("#pv").src = pvUrl(); };

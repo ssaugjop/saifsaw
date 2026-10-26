@@ -134,7 +134,7 @@ async def _on_startup(app: web.Application) -> None:
         await get_bot().set_my_commands(BOT_COMMANDS)
         if cfg.public_url.startswith("https://"):
             await get_bot().set_chat_menu_button(
-                menu_button=MenuButtonWebApp(text="🖥 اللوحة", web_app=WebAppInfo(url=cfg.public_url + "/panel/")),
+                menu_button=MenuButtonWebApp(text="فتح", web_app=WebAppInfo(url=cfg.public_url + "/panel/")),
             )
     except Exception as e:
         log.warning("⚠️ تعذّر ضبط أوامر البوت/زر القائمة: %s", e)
@@ -276,7 +276,7 @@ async def _run_actions() -> None:
         if cfg.public_url.startswith("https://"):
             try:
                 await bot.set_chat_menu_button(
-                    menu_button=MenuButtonWebApp(text="🖥 اللوحة", web_app=WebAppInfo(url=cfg.public_url + "/panel/")),
+                    menu_button=MenuButtonWebApp(text="فتح", web_app=WebAppInfo(url=cfg.public_url + "/panel/")),
                 )
             except Exception as e:
                 log.warning("set_chat_menu_button failed: %s", e)
@@ -299,14 +299,17 @@ async def _run_actions() -> None:
                 log.warning("heartbeat: %s", type(e).__name__)
             await asyncio.sleep(60)
 
+    from app.notify import run_notif_pusher
     timer = asyncio.create_task(_timer())
     hb_task = asyncio.create_task(_heartbeat())
+    notif_task = asyncio.create_task(run_notif_pusher(bot))
     try:
         await dp.start_polling(bot, handle_signals=True, close_bot_session=False,
                                allowed_updates=dp.resolve_used_update_types())
     finally:
         timer.cancel()
         hb_task.cancel()
+        notif_task.cancel()
         try:                                  # أوقف تطبيقات المستخدمين بنظافة قبل إغلاق الويب والقاعدة
             import app.process_manager as pm
             await pm.stop_all()

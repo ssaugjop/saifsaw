@@ -7,6 +7,7 @@ SAWHost - إشعارات الأدمن الفورية (تيليجرام)
 """
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import uuid
@@ -89,3 +90,36 @@ async def push_new_request(bot, req_id: uuid.UUID) -> bool:
         log.warning("admin push failed: %s", ex)
         await store_notif(request_text(req, user), kind="sub_request")
         return False
+
+
+async def run_notif_pusher(bot, interval: float = 4.0) -> None:
+    """يرسل كل إشعار للأدمن كرسالة مستقلة (مستخدم جديد، طلب، تنبيه...) بدل دمجه في رسالة الترحيب.
+    يحترم حدود تيليجرام (نحو رسالتين/ثانية لمحادثة واحدة) ويعيد المحاولة عند الفشل دون تكرار الإرسال."""
+    from aiogram.exceptions import TelegramRetryAfter
+    from app.engines import get_unread_notifs, mark_notifs_read_ids
+    last_warn = 0.0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            items = list(reversed(await get_unread_notifs()))       # الأقدم أولاً
+            if not items:
+                continue
+            sent: list = []
+            for n in items[:10]:
+                try:
+                    await bot.send_message(get_cfg().admin_id, f"🔔 <b>إشعار جديد</b>\n\n{n.text}", disable_web_page_preview=True)
+                    sent.append(n.id)
+                    await asyncio.sleep(0.5)
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(min(int(e.retry_after) + 1, 60))
+                    break
+                except Exception as ex:                              # الأدمن لم يبدأ البوت / حُظر: يبقى الإشعار غير مقروء
+                    now = asyncio.get_event_loop().time()
+                    if now - last_warn > 300:
+                        log.warning("notif push failed: %s", ex); last_warn = now
+                    break
+            await mark_notifs_read_ids(sent)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("notif pusher")

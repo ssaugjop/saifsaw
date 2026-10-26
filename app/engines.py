@@ -1,5 +1,6 @@
 """SAWHost - All Engines (auth, hosting, storage, domain, backup, subscription, admin, text, notifications)"""
 from __future__ import annotations
+import logging
 
 import asyncio, hashlib, html as _h, io, re, secrets, shutil, uuid, zipfile
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -48,11 +49,35 @@ BOT_TEXTS: dict[str, dict] = {
     "welcome":         {"text": "👋 أهلًا بك في <b>SAWHost</b>\n\nمنصة استضافة المواقع الاحترافية للعراقيين والعرب.\n\n🚀 افتح لوحة التحكم لرفع موقعك وإدارته — يصبح مباشراً في دقائق!", "desc": "رسالة الترحيب"},
     "payment_info":    {"text": "💰 <b>طريقة الدفع</b>\n\nتواصل مع المشرف @S_SA_IQ لإتمام الدفع وتفعيل الاشتراك.", "desc": "تعليمات الدفع"},
     "maintenance_msg": {"text": "🛠 المنصة تحت الصيانة حاليًا. حاول لاحقًا.", "desc": "رسالة وضع الصيانة"},
-    "about":           {"text": "ℹ️ <b>عن SAWHost</b>\n\nمنصة استضافة مواقع عراقية. للتواصل: @S_SA_IQ", "desc": "صفحة عن المنصة"},
+    "about":           {"text": "ℹ️ <b>عن SAWHost</b>\n"
+        "منصة استضافة عراقية تنشر موقعك أو تطبيقك على رابط خاص خلال دقائق، وتديره كله من داخل تيليجرام — بلا سيرفرات ولا إعدادات معقّدة.\n\n"
+        "🌐 <b>ماذا نستضيف؟</b>\n"
+        "• مواقع ثابتة: HTML وCSS وJavaScript، ومشاريع React وVue وVite بعد بنائها\n"
+        "• تطبيقات <b>Python</b>: Flask وFastAPI وDjango\n"
+        "• تطبيقات <b>Node.js</b>: Express وNext.js\n"
+        "• تطبيقات <b>PHP</b>: بما فيها Laravel\n"
+        "يُكتشف نوع مشروعك تلقائياً وتُثبَّت حزمه بنفسها.\n\n"
+        "🖥 <b>لوحة التحكم</b>\n"
+        "• رفع المشروع كملف ZIP، أو ربطه بـ GitHub لينشر نفسه مع كل تحديث\n"
+        "• مدير ملفات ومحرر أكواد بمعاينة مباشرة\n"
+        "• رابط جاهز بشهادة HTTPS، وربط دومين خاص حسب خطتك\n"
+        "• نسخ احتياطية وسجلات تشغيل وإعادة تشغيل بضغطة\n\n"
+        "🔒 <b>الأمان والموثوقية</b>\n"
+        "• كل تطبيق يعمل معزولاً عن غيره، ولا يصل إلى أسرار المنصة أو بيانات المستخدمين الآخرين\n"
+        "• بياناتك محفوظة تلقائياً في تخزين سحابي مشفّر (AES-256) وتُستعاد عند أي إعادة تشغيل\n"
+        "• يُعاد تشغيل تطبيقك تلقائياً إن تعطّل\n\n"
+        "💳 <b>الاشتراك</b>\n"
+        "• تختار الخطة من اللوحة وترسل طلبك، ثم يتحقق المشرف من الدفع ويفعّل اشتراكك يدوياً\n"
+        "• الدفع بالدينار العراقي\n"
+        "• تجربة مجانية تزيد مع كل صديق تدعوه\n\n"
+        "🛟 <b>الدعم الفني:</b> @S_SA_IQ", "desc": "صفحة عن المنصة"},
     "platform_domain": {"text": "sawhost-sawhost.hf.space", "desc": "دومين المنصة الافتراضي"},
 }
 
 _text_cache: dict[str, str] = {}
+_LEGACY_DEFAULTS: dict[str, tuple[str, ...]] = {
+    "about": ("ℹ️ <b>عن SAWHost</b>\n\nمنصة استضافة مواقع عراقية. للتواصل: @S_SA_IQ",),
+}
 
 async def get_text(key: str) -> str:
     if key in _text_cache: return _text_cache[key]
@@ -60,6 +85,8 @@ async def get_text(key: str) -> str:
         r = await s.execute(select(BotText).where(BotText.key == key))
         row = r.scalar_one_or_none()
     val = row.value if row else BOT_TEXTS.get(key, {}).get("text", f"[{key}]")
+    if row and val in _LEGACY_DEFAULTS.get(key, ()):          # نص افتراضي قديم محفوظ سابقاً: نستبدله بالجديد. تخصيص الأدمن لا يُمَس
+        val = BOT_TEXTS.get(key, {}).get("text", val)
     _text_cache[key] = val
     return val
 
@@ -154,6 +181,15 @@ async def get_unread_notifs() -> list[AdminNotif]:
     async with db() as s:
         r = await s.execute(select(AdminNotif).where(AdminNotif.is_read.is_(False)).order_by(AdminNotif.created_at.desc()).limit(20))
         return list(r.scalars().all())
+
+async def mark_notifs_read_ids(ids: list) -> None:
+    if not ids:
+        return
+    async with db() as s:
+        r = await s.execute(select(AdminNotif).where(AdminNotif.id.in_(ids)))
+        for n in r.scalars().all():
+            n.is_read = True
+            s.add(n)
 
 async def mark_notifs_read() -> None:
     async with db() as s:
@@ -404,6 +440,16 @@ def forbidden_ext() -> set[str]:
     return _ALWAYS_FORBIDDEN if apps_enabled() else (_ALWAYS_FORBIDDEN | _APP_EXT)
 
 
+
+async def _thaw(sid) -> None:
+    """موقع «بارد» (محفوظ في قناة التخزين ولم يُستعَد بعد) يُستعاد قبل أي كتابة أو قراءة لملفاته، فلا يُكتب فوقه شيء أبداً."""
+    try:
+        from app import tgstore
+        if str(sid) in tgstore.S.cold:
+            await tgstore.ensure_site(str(sid))
+    except Exception:
+        logging.getLogger("sawhost.engines").warning("thaw failed for %s", sid, exc_info=True)
+
 class Storage:
     @staticmethod
     def site_root(sid: uuid.UUID) -> Path:
@@ -446,6 +492,7 @@ class Storage:
 
     @staticmethod
     async def save(uid: uuid.UUID, sid: uuid.UUID, rel: str, data: bytes) -> Path:
+        await _thaw(sid)
         Storage.validate_name(Path(rel).name)
         mb = len(data)/(1024*1024)
         await Subs.assert_storage(uid, sid, mb)
@@ -469,6 +516,7 @@ class Storage:
           5. لا يوجد أي ملف HTML بالجذر إطلاقاً → None (تظهر عندها صفحة
              تشخيصية واضحة بدل تخمين خاطئ).
         """
+        await _thaw(sid)
         root = Storage.site_root(sid)
         try:
             entries = [p for p in root.iterdir() if p.is_file()]
@@ -542,6 +590,7 @@ class Storage:
 
     @staticmethod
     async def extract_zip(uid: uuid.UUID, sid: uuid.UUID, data: bytes, rel: str = ".") -> int:
+        await _thaw(sid)
         dest = Storage.resolve(sid, rel); dest.mkdir(parents=True, exist_ok=True)
         dest_r = dest.resolve()
         try:
@@ -580,6 +629,7 @@ class Storage:
         دون لمس ملفات رفعها المستخدم يدوياً.
         يرجع (عدد الملفات، عدد المتجاهَل، manifest الجديد).
         """
+        await _thaw(sid)
         import tarfile
         dest = Storage.site_root(sid); dest_r = dest.resolve()
         sub = Storage._clean_member(subdir or "") if subdir else None
@@ -667,6 +717,7 @@ class Storage:
 
     @staticmethod
     async def recalc(sid: uuid.UUID) -> int:
+        await _thaw(sid)
         root = Storage.site_root(sid)
         total = sum(f.stat().st_size for f in root.rglob("*") if f.is_file() and not f.is_symlink())
         mb = max(1, total//(1024*1024)) if total else 0
@@ -1037,7 +1088,10 @@ class GithubIntegration:
     async def _request(method: str, path: str, token: str | None, *, json_body: dict | None = None,
                        want_bytes: bool = False, limit: int = 0):
         import aiohttp
+        from urllib.parse import urlparse
         url = path if path.startswith("http") else _GH_API + path
+        if urlparse(url).hostname not in ("api.github.com", "codeload.github.com", "github.com"):   # لا طلبات لأي مضيف آخر (SSRF)
+            raise GithubError(user_msg="عنوان غير مسموح.")
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60 if want_bytes else 20)) as sess:
                 async with sess.request(method, url, headers=GithubIntegration._headers(token), json=json_body) as resp:
@@ -1584,32 +1638,62 @@ class Admin:
 #  SUBSCRIPTION REQUEST ENGINE
 # ═══════════════════════════════════════════════════════════════════
 class Requests:
+    MAX_PER_DAY = 5
+
     @staticmethod
     async def create(uid: uuid.UUID, plan_id: uuid.UUID, months: int = 1, note: str | None = None) -> SubRequest:
+        try:
+            months = int(months)
+        except (TypeError, ValueError):
+            raise AppError(user_msg="عدد الأشهر غير صالح.")
+        if not (1 <= months <= 24):
+            raise AppError(user_msg="عدد الأشهر يجب أن يكون بين 1 و24.")
         async with db() as s:
-            r = await s.execute(select(SubRequest).where(SubRequest.user_id==uid, SubRequest.status==ReqStatus.PENDING))
-            if r.scalar_one_or_none(): raise AppError(user_msg="لديك طلب معلّق بالفعل.")
-            req = SubRequest(user_id=uid, plan_id=plan_id, months=max(1, months), note=note)
+            plan = (await s.execute(select(SubscriptionPlan).where(SubscriptionPlan.id == plan_id))).scalar_one_or_none()
+            if not plan or not plan.is_active or plan.price_monthly <= 0:
+                raise AppError(user_msg="هذه الخطة غير متاحة للاشتراك.")
+            r = await s.execute(select(SubRequest).where(SubRequest.user_id == uid, SubRequest.status == ReqStatus.PENDING))
+            if r.scalars().first():
+                raise AppError(user_msg="لديك طلب معلّق بالفعل. انتظر مراجعة المشرف.")
+            since = datetime.now(timezone.utc) - timedelta(days=1)
+            n = (await s.execute(select(func.count(SubRequest.id)).where(SubRequest.user_id == uid, SubRequest.created_at > since))).scalar_one()
+            if n >= Requests.MAX_PER_DAY:
+                raise AppError(user_msg="وصلت للحد اليومي لطلبات الاشتراك. حاول غداً أو راسل الدعم.")
+            req = SubRequest(user_id=uid, plan_id=plan_id, months=months, note=(note or None))
             s.add(req); await s.flush(); return req
 
     @staticmethod
     async def approve(rid: uuid.UUID, admin_uid: uuid.UUID) -> SubRequest:
+        """تفعيل الاشتراك. صارم: ذرّي (لا تفعيل مزدوج)، ينشئ الاشتراك إن لم يوجد، ويوثّق من فعّل ومتى وبأي مبلغ."""
         async with db() as s:
-            r = await s.execute(
-                select(SubRequest).options(selectinload(SubRequest.plan)).where(SubRequest.id==rid)
-            )
+            r = await s.execute(select(SubRequest).options(selectinload(SubRequest.plan)).where(SubRequest.id == rid))
             req = r.scalar_one_or_none()
             if not req: raise NotFoundErr("الطلب")
             if req.status != ReqStatus.PENDING: raise AppError(user_msg="الطلب تمت معالجته مسبقًا.")
-            req.status = ReqStatus.APPROVED; req.admin_note = "✅ تمت الموافقة"; s.add(req)
-            sub_r = await s.execute(select(Subscription).where(Subscription.user_id==req.user_id)); sub = sub_r.scalar_one_or_none()
-            if sub:
-                now = datetime.now(timezone.utc)
-                cur_exp = as_aware(sub.expires_at)
-                base = cur_exp if (cur_exp and cur_exp > now) else now
-                sub.expires_at = base + timedelta(days=30 * req.months)
-                sub.plan_id = req.plan_id
-                s.add(sub)
+            claim = await s.execute(update(SubRequest).where(SubRequest.id == rid, SubRequest.status == ReqStatus.PENDING)
+                                    .values(status=ReqStatus.APPROVED))
+            if claim.rowcount != 1:                      # ضغط مشرفان «موافقة» معاً: ينجح واحد فقط
+                raise AppError(user_msg="الطلب تمت معالجته مسبقًا.")
+            req.status = ReqStatus.APPROVED
+            now = datetime.now(timezone.utc)
+            sub = (await s.execute(select(Subscription).where(Subscription.user_id == req.user_id))).scalar_one_or_none()
+            note = ""
+            if sub is None:                              # لا يُسجَّل الطلب «مقبولاً» ثم لا يُفعَّل شيء أبداً
+                sub = Subscription(user_id=req.user_id, plan_id=req.plan_id, expires_at=now)
+                s.add(sub); await s.flush()
+            cur_exp = as_aware(sub.expires_at)
+            if sub.plan_id == req.plan_id and cur_exp and cur_exp > now:
+                base = cur_exp                           # تجديد لنفس الخطة: تُضاف المدة فوق المتبقي
+            else:
+                base = now                               # خطة مختلفة: لا تُحمَل أيام خطة أرخص إلى خطة أغلى
+                if cur_exp and cur_exp > now and sub.plan_id != req.plan_id:
+                    note = " · تغيير خطة: بدأت المدة من الآن"
+            sub.expires_at = base + timedelta(days=30 * req.months)
+            sub.plan_id = req.plan_id
+            s.add(sub)
+            total = req.plan.price_monthly * req.months
+            req.admin_note = f"✅ وافق {admin_uid} · {now:%Y-%m-%d %H:%M} UTC · {total:,} د.ع · {req.months} شهر{note}"
+            s.add(req)
             return req
 
     @staticmethod

@@ -516,6 +516,11 @@ async def audit(actor: Any, action: str, target: str | None = None, detail: str 
         log.warning("audit write failed", exc_info=True)
 
 
+_SITE_FILE_API = re.compile(
+    r"^/panel/api/sites/([0-9a-fA-F-]{36})/(?:start|restart|files|file|download|download-link|upload|mkdir|rename-file|"
+    r"delete-file|set-index|backups|github/sync|github/webhook|search|logs)$")
+
+
 @web.middleware
 async def _middleware(req: web.Request, handler):
     # اللوحة تُخدَم فقط على مضيفات المنصة؛ لا على دومين موقع مستضاف ولا على <slug>.<SITES_DOMAIN>
@@ -533,6 +538,15 @@ async def _middleware(req: web.Request, handler):
             return _err(403, "مصدر الطلب غير مسموح.")
         if req.path not in _CSRF_EXEMPT and not _csrf_ok(req):
             return _j({"error": "انتهت صلاحية رمز الحماية. جارِ تحديث الصفحة…", "code": "csrf"}, status=403)
+    if is_api:
+        m = _SITE_FILE_API.match(req.path)
+        if m:                                                    # موقع بارد في قناة التخزين → استعده قبل لمس ملفاته
+            from app import tgstore
+            if m.group(1) in tgstore.S.cold or m.group(1) in tgstore.S.bad:
+                if not await tgstore.ensure_site(m.group(1)):
+                    if m.group(1) in tgstore.S.bad:
+                        return _err(503, "ملفات هذا الموقع تالفة في التخزين السحابي. تواصل مع الدعم لاستعادته من نسخة سابقة.")
+                    return _err(503, "جارِ استعادة الموقع من التخزين السحابي… أعد المحاولة بعد لحظات.")
     try:
         resp = await handler(req)
     except ApiErr as e:
@@ -625,7 +639,10 @@ async def page_static(req: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound()
     if not f.is_file():
         raise web.HTTPNotFound()
-    return web.FileResponse(f, headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})
+    # الصور لا تتغير: كاش أسبوع (يُسرّع فتح اللوحة على شبكات الهاتف). الكود (js/css) يبقى no-cache مع ETag حتى لا تتعارض نسخ الملفات.
+    img = f.suffix.lower() in (".png", ".ico", ".webp", ".jpg", ".jpeg", ".svg", ".woff2")
+    cc = "public, max-age=604800, stale-while-revalidate=86400" if img else "no-cache"
+    return web.FileResponse(f, headers={"Cache-Control": cc, "X-Content-Type-Options": "nosniff"})
 
 
 # ═══════════════════════════════════════════════════════════════════

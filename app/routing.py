@@ -203,6 +203,21 @@ def _wildcard_slug(host: str) -> str | None:
     return None
 
 
+async def _ensure_cold(site) -> web.Response | None:
+    """موقع محفوظ في قناة التخزين ولم يُستعَد بعد (بارد): نستعيده الآن قبل الخدمة. يرجع صفحة خطأ أو None إن كان جاهزاً."""
+    from app import tgstore
+    sid = str(site.id)
+    if sid not in tgstore.S.cold and sid not in tgstore.S.bad:
+        return None
+    if await tgstore.ensure_site(sid):
+        return None
+    if sid in tgstore.S.bad:
+        return web.Response(status=503, content_type="text/html",
+            text="<h2>⚠️ ملفات هذا الموقع تالفة في التخزين السحابي. تواصل مع الدعم.</h2>")
+    return web.Response(status=503, content_type="text/html", headers={"Retry-After": "10", "Refresh": "8"},
+        text="<h2>⏳ جارِ استعادة الموقع من التخزين السحابي… سيُعاد التحميل تلقائياً.</h2>")
+
+
 async def site_handler(req: web.Request) -> web.Response:
     host = effective_host(req)
     slug = _wildcard_slug(host)
@@ -221,6 +236,9 @@ async def site_handler(req: web.Request) -> web.Response:
         return web.Response(status=503, content_type="text/html",
             text="<h2>⏸ هذا الموقع متوقف حاليًا.</h2>")
 
+    cold = await _ensure_cold(site)
+    if cold is not None:
+        return cold
     return await _serve_static(req, site, req.match_info.get("tail", ""))
 
 
@@ -258,6 +276,10 @@ async def _serve_slug(req: web.Request, slug: str, tail: str) -> web.Response:
     if site.status == SiteStatus.SUSPENDED:
         return web.Response(status=403, content_type="text/html",
             text="<h2>🚫 هذا الموقع موقوف من إدارة المنصة.</h2>")
+
+    cold = await _ensure_cold(site)
+    if cold is not None:
+        return cold
 
     if site.kind == SiteKind.STATIC:
         if site.status != SiteStatus.RUNNING:

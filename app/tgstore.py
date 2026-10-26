@@ -1,25 +1,30 @@
 """
-SAWHost - التخزين الدائم في قناة تلجرام خاصة (app/tgstore.py)
-==============================================================
-يحلّ مشكلة «القرص يُمسح عند كل إعادة تشغيل» (GitHub Actions / HuggingFace بدون Persistent Storage)
-بدون أي خدمة خارجية: كل البيانات تُحفظ كملفات مشفّرة داخل قناة تلجرام خاصة يملكها الأدمن.
+SAWHost - التخزين الدائم في قناة تلجرام خاصة (app/tgstore.py)  — الإصدار 2
+==========================================================================
+يحلّ مشكلة «القرص يُمسح عند كل إعادة تشغيل» (GitHub Actions / HuggingFace) بلا أي خدمة خارجية. كل البيانات ملفات
+مشفّرة AES-256-GCM داخل قناة تلجرام خاصة يملكها الأدمن.
 
-الفكرة
+البنية
 ------
-  • لقطة (Snapshot) = تيارين مستقلين:  db (قاعدة SQLite)  +  sites (ملفات المواقع المستضافة).
-  • كل تيار: ضغط → تقسيم لأجزاء ≤ 15MB → تشفير AES-256-GCM لكل جزء (المفتاح مشتق من SECRET_KEY)
-    → رفع كمستندات في القناة (حدّ تحميل البوت 20MB للملف الواحد).
-  • ملف «manifest» صغير مشفّر يسرد أجزاء كل تيار، يُرفع ثم **يُثبَّت** في القناة.
-    عند الإقلاع: getChat(channel).pinned_message ← manifest ← الأجزاء ← استعادة. لا حاجة لقراءة سجل القناة.
-  • مؤشر القناة نفسه (معرّفها) يُحفظ كرسالة مثبّتة في محادثة الأدمن مع البوت، أو في Secret
-    اسمه STORAGE_CHANNEL_ID — لذلك لا نحتاج أي متغير بيئة إضافي بعد الربط الأول من لوحة الأدمن.
-  • نحتفظ بجيلين (الحالي + السابق) ونحذف ما قبلهما تلقائياً.
+  • قاعدة البيانات: لقطة SQLite كاملة مضغوطة ومشفّرة (مقسّمة لأجزاء ≤ 15MB).
+  • المواقع (v2): أرشيف مستقل لكل موقع، تُجمَّع الأرشيفات في «حزم» ≤ 15MB (انظر sitepacks.py). حفظ تزايدي (يُرفع المتغيّر
+    فقط)، تنظيف تلقائي للحزم الميتة، واستعادة كسولة للمواقع الكبيرة — فلا سقف عملياً على عدد المواقع ولا يتأخر الإقلاع.
+  • المانيفست (JSON مضغوط ومشفّر) يسرد القاعدة والمواقع والحزم ويُثبَّت في القناة. عند الإقلاع:
+    getChat(channel).pinned_message ← manifest ← الأجزاء ← استعادة.
+  • مؤشر القناة يُحفظ كرسالة مثبّتة في محادثة الأدمن مع البوت، أو في Secret اسمه STORAGE_CHANNEL_ID.
+  • جيلان دائماً (الحالي + السابق)؛ ما قبلهما يُحذف تلقائياً.
+
+حدود تيليجرام المراعاة
+----------------------
+  • رفع ≤ 50MB وتنزيل البوت ≤ 20MB للملف → كل جزء ≤ 15MB قبل التشفير (15MB + 28 بايت بعده).
+  • رسالة/ثانية لكل محادثة → فاصل SEND_GAP بين الرسائل + احترام retry_after. تجميع الأرشيفات الصغيرة يقلّل الرسائل بمئات المرات.
+  • التحقق من حجم المستند المرفوع، ثم قراءة المانيفست المثبّت بعد كل حفظ للتأكد أنه سليم وقابل للفك.
 
 الأمان من فقدان البيانات
 ------------------------
-  • إن فشلت الاستعادة (مفتاح مختلف / ملف تالف / شبكة) يدخل النظام وضع «قراءة فقط»:
-    لا حفظ تلقائي ولا حذف للقديم، ويُنبَّه الأدمن. هكذا لا تُستبدل لقطة سليمة بقاعدة فارغة أبداً.
-  • الاستعادة تتم فقط إذا لم تكن قاعدة البيانات/مجلد المواقع موجودة محلياً (أو TGSTORE_FORCE_RESTORE=1).
+  • فشلت الاستعادة (مفتاح مختلف / ملف تالف) → وضع «قراءة فقط»: لا حفظ ولا حذف. لا تُستبدل لقطة سليمة بقاعدة فارغة أبداً.
+  • موقع تالف أو لم يُستعَد بعد (بارد) لا يُحفظ فوق نسخته السليمة أبداً.
+  • الرفع ذرّي: الحزم أولاً ثم المانيفست ثم التثبيت. أي فشل يزيل ما رُفع فقط وتبقى اللقطة السابقة سليمة ومثبّتة.
 """
 from __future__ import annotations
 
@@ -39,6 +44,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app import sitepacks as SP
 from app.config import get_cfg
 
 log = logging.getLogger("sawhost.tgstore")
@@ -60,7 +66,11 @@ def _env_int(k: str, d: int) -> int:
 
 DB_INTERVAL = _env_int("TGSTORE_DB_INTERVAL", 300)             # أقل فاصل بين لقطتين للقاعدة (ث)
 SITES_INTERVAL = _env_int("TGSTORE_SITES_INTERVAL", 1800)      # أقل فاصل بين لقطتين للمواقع (ث)
-MAX_SITES_BYTES = _env_int("TGSTORE_MAX_SITES_MB", 300) * 1024 * 1024
+EAGER_SITE_MB = _env_int("TGSTORE_EAGER_SITE_MB", 25)           # موقع أصغر من هذا يُستعاد فوراً عند الإقلاع
+EAGER_TOTAL_MB = _env_int("TGSTORE_EAGER_TOTAL_MB", 400)        # ميزانية الاستعادة الفورية؛ الباقي يُستعاد عند أول طلب
+EAGER_ALL = os.getenv("TGSTORE_EAGER_ALL", "") == "1"
+EAGER_SECONDS = _env_int("TGSTORE_EAGER_SECONDS", 240)
+TOTAL_WARN_BYTES = _env_int("TGSTORE_TOTAL_WARN_GB", 20) * 1024 ** 3
 TICK = 30                                                      # دورة فحص التغييرات (ث)
 
 
@@ -88,6 +98,11 @@ class _State:
         self.task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
         self.notified: dict[str, float] = {}
+        self.bot = None
+        self.cold: set[str] = set()          # مواقع في القناة لم تُستعَد بعد (تُستعاد عند أول طلب)
+        self.bad: dict[str, str] = {}        # مواقع تالفة: لا تُحفظ فوق نسختها السليمة
+        self.site_locks: dict[str, asyncio.Lock] = {}
+        self.stats: dict = {}
 
 
 S = _State()
@@ -114,6 +129,18 @@ def _enc(plain: bytes, aad: bytes) -> bytes:
 def _dec(blob: bytes, aad: bytes) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(_key()).decrypt(blob[:12], blob[12:], aad)
+
+
+def _pack_manifest(man: dict) -> bytes:
+    raw = json.dumps(man, separators=(",", ":"), ensure_ascii=False).encode()
+    return _enc(gzip.compress(raw, 6, mtime=0), _MANIFEST_AAD)
+
+
+def _unpack_manifest(blob: bytes) -> dict:
+    raw = _dec(blob, _MANIFEST_AAD)
+    if raw[:2] == b"\x1f\x8b":                                   # v2 مضغوط؛ v1 كان JSON خاماً
+        raw = gzip.decompress(raw)
+    return json.loads(raw)
 
 
 def _seal_parts(stream: str, gen: int, raw: bytes) -> list[bytes]:
@@ -331,11 +358,22 @@ async def _retry(fn, tries: int = 5):
 
 
 async def _send_blob(bot, chat_id: int, filename: str, blob: bytes, caption: str | None = None) -> tuple[int, str]:
-    async def go():
-        return await bot.send_document(chat_id, _mk_file(blob, filename), caption=caption,
-                                       disable_notification=True, request_timeout=600)
-    m = await _retry(go)
-    return m.message_id, m.document.file_id
+    last: Exception | None = None
+    for _ in range(3):
+        async def go():
+            return await bot.send_document(chat_id, _mk_file(blob, filename), caption=caption,
+                                           disable_notification=True, request_timeout=600)
+        m = await _retry(go)
+        sz = getattr(m.document, "file_size", None)
+        if sz is None or sz == len(blob):
+            return m.message_id, m.document.file_id
+        last = IOError(f"حجم المستند المرفوع ({sz}) لا يطابق المُرسَل ({len(blob)})")   # تحقق صارم
+        try:
+            await bot.delete_message(chat_id, m.message_id)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+    raise last or IOError("فشل رفع الملف")
 
 
 async def _fetch_blob(bot, file_id: str) -> bytes:
@@ -366,6 +404,83 @@ async def _notify(bot, text: str, key: str, every: int = 1800) -> None:
         await bot.send_message(get_cfg().admin_id, text, parse_mode="HTML")
     except Exception as e:
         log.warning("notify admin failed: %s", e)
+
+
+class TgIO:
+    """تنفيذ SP.PackIO فوق قناة تيليجرام."""
+
+    def __init__(self, bot, channel_id: int):
+        self.bot, self.cid = bot, channel_id
+
+    async def put(self, pack_id: str, blob: bytes) -> dict:
+        mid, fid = await _send_blob(self.bot, self.cid, f"pack-{pack_id}.bin", blob)
+        return {"mid": mid, "fid": fid}
+
+    async def get(self, rec: dict) -> bytes:
+        return await _fetch_blob(self.bot, rec["fid"])
+
+    async def drop(self, mids: list[int]) -> None:
+        await _delete_msgs(self.bot, self.cid, mids)
+
+
+def _known_site_ids() -> set[str] | None:
+    """معرّفات المواقع الموجودة فعلاً في القاعدة (لإسقاط المحذوفة من الفهرس). None = تعذّر الجزم → لا نحذف شيئاً."""
+    p = _db_path()
+    if not p.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=10)
+        try:
+            try:
+                rows = con.execute("SELECT id FROM sites WHERE COALESCE(is_deleted, 0) = 0")
+            except sqlite3.Error:
+                rows = con.execute("SELECT id FROM sites")
+            return {str(r[0]) for r in rows}
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
+def _present_with_files(name: str) -> bool:
+    d = _sites_root() / name
+    try:
+        return d.is_dir() and any(d.iterdir())
+    except OSError:
+        return False
+
+
+async def ensure_site(name: str) -> bool:
+    """يُستدعى قبل لمس ملفات موقع. إن كان «بارداً» (موجوداً في القناة فقط) يُستعاد الآن. True = جاهز."""
+    name = str(name)
+    if name not in S.cold:
+        return name not in S.bad
+    if not S.bot or not S.channel_id or not S.manifest:
+        return True
+    lock = S.site_locks.setdefault(name, asyncio.Lock())
+    async with lock:
+        if name not in S.cold:
+            return name not in S.bad
+        ent = (S.manifest.get("sites") or {}).get(name)
+        if not ent:
+            S.cold.discard(name)
+            return True
+        try:
+            reader = SP.PackReader(TgIO(S.bot, S.channel_id), _dec, S.manifest.get("packs") or {})
+            await SP.restore_one(_sites_root(), name, ent, reader)
+            await SP.refresh_sigs(_sites_root(), S.manifest["sites"], [name])
+            S.cold.discard(name)
+            ci(f"استُعيد موقع بارد ({_fmt_size(ent['size'])}).")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error("lazy restore failed for %s: %s", name, e)
+            if isinstance(e, SP.IntegrityError) or type(e).__name__ == "InvalidTag":
+                S.bad[name] = f"{type(e).__name__}: {str(e)[:160]}"          # تالف فعلاً
+                S.cold.discard(name)
+                await _notify(S.bot, f"🔴 <b>موقع تالف في القناة</b>\n<code>{name}</code>\n{S.bad[name]}", f"bad:{name}", 3600)
+            return False                                                      # عابر: يبقى بارداً فيُعاد المحاولة
 
 
 # ── مؤشر القناة ───────────────────────────────────────────────────────────────
@@ -409,7 +524,7 @@ async def _read_manifest(bot, channel: int) -> tuple[dict | None, int | None, st
     if not doc or getattr(doc, "file_name", "") != MANIFEST_NAME:
         return None, None, title
     blob = await _fetch_blob(bot, doc.file_id)
-    man = json.loads(_dec(blob, _MANIFEST_AAD))
+    man = _unpack_manifest(blob)
     return man, pm.message_id, title
 
 
@@ -465,15 +580,18 @@ async def boot(bot) -> None:
         S.last_db_ver = None          # بعد init_db سيظهر تغيير → تُحفظ أول لقطة تلقائياً
         return
 
+    S.bot = bot
     try:
         if need_db and man.get("db"):
             raw = await _restore_stream(bot, "db", man["db"])
             await asyncio.to_thread(_unpack_db, raw)
             ci(f"تمت استعادة قاعدة البيانات ({man['db']['size'] // 1024} KB).")
-        if need_sites and man.get("sites"):
+        if int(man.get("v", 1)) >= 2:
+            await _boot_sites_v2(bot, man)
+        elif need_sites and man.get("sites"):                        # لقطة قديمة (v1): ملف tar واحد لكل المواقع
             raw = await _restore_stream(bot, "sites", man["sites"])
             n = await asyncio.to_thread(_unpack_sites, raw)
-            ci(f"تمت استعادة ملفات المواقع ({n} ملف).")
+            ci(f"تمت استعادة ملفات المواقع من لقطة قديمة ({n} ملف) — ستُرقّى للنظام الجديد عند أول حفظ.")
     except Exception as e:
         why = ("تعذّر فك التشفير — SECRET_KEY مختلف" if type(e).__name__ == "InvalidTag"
                else f"فشلت الاستعادة: {type(e).__name__}: {e}")
@@ -482,8 +600,30 @@ async def boot(bot) -> None:
         return
 
     S.last_db_sha = (man.get("db") or {}).get("sha")
-    S.last_sites_sig = (man.get("sites") or {}).get("sig")
+    S.last_sites_sig = (man.get("sites") or {}).get("sig") if int(man.get("v", 1)) < 2 else None
     S.last_db_ver = await asyncio.to_thread(_db_version)
+
+
+async def _boot_sites_v2(bot, man: dict) -> None:
+    """استعادة المواقع: الصغيرة فوراً (بميزانية)، والكبيرة «باردة» تُستعاد عند أول طلب."""
+    sites, packs = man.get("sites") or {}, man.get("packs") or {}
+    S.cold, S.bad = set(), {}
+    if not sites:
+        return
+    missing = {n: e for n, e in sites.items() if not _present_with_files(n)}
+    if not missing:
+        ci(f"مواقع القناة: {len(sites)} — كلها موجودة محلياً.")
+        return
+    eager, cold = SP.split_eager_cold(missing, site_mb=EAGER_SITE_MB, total_mb=EAGER_TOTAL_MB, everything=EAGER_ALL)
+    restored, deferred, bad = await SP.restore_sites(root=_sites_root(), sites=sites, packs=packs, io_=TgIO(bot, S.channel_id),
+                                                      dec=_dec, eager=eager, time_budget=EAGER_SECONDS)
+    await SP.refresh_sigs(_sites_root(), sites, restored)
+    S.cold = set(cold) | set(deferred)
+    S.bad = bad
+    ci(f"المواقع: استُعيد {len(restored)} فوراً · {len(S.cold)} بارد (يُستعاد عند أول طلب) · تالف {len(bad)} · المجموع {len(sites)}.")
+    if bad:
+        await _notify(bot, f"🔴 <b>{len(bad)} موقع تالف في القناة</b> (لن يُكتب فوق نسخته السليمة):\n"
+                           + "\n".join(f"<code>{n[:8]}…</code> {r[:90]}" for n, r in list(bad.items())[:8]), "bad_sites", 3600)
 
 
 async def _restore_stream(bot, stream: str, ent: dict) -> bytes:
@@ -564,24 +704,34 @@ async def _save_locked(bot, do_db: bool, do_sites: bool | None, reason: str) -> 
                     new["db"] = ent
                     changed = True
 
-        # ── المواقع ──
-        old_sites = old.get("sites")
-        new["sites"] = old_sites
-        if do_sites is not False:
-            sig, total = await asyncio.to_thread(_sites_sig)
-            if total > MAX_SITES_BYTES:
-                ci(f"ملفات المواقع ({_fmt_size(total)}) أكبر من الحدّ {_fmt_size(MAX_SITES_BYTES)} — لن تُحفظ.")
-                await _notify(bot, f"⚠️ ملفات المواقع ({_fmt_size(total)}) تتجاوز حدّ التخزين السحابي "
-                                   f"({_fmt_size(MAX_SITES_BYTES)}). ارفع TGSTORE_MAX_SITES_MB أو قلّل الحجم.", "sites_big", 6 * 3600)
-            elif total > 0 and sig != (old_sites or {}).get("sig"):
-                raw = await asyncio.to_thread(_pack_sites)
-                if raw:
-                    ent = await _upload_stream(bot, cid, "sites", gen, raw, uploaded)
-                    ent["sig"] = sig
-                    ent["prev_mids"] = [p["mid"] for p in (old_sites or {}).get("parts", [])]
-                    del_mids += (old_sites or {}).get("prev_mids", [])
-                    new["sites"] = ent
-                    changed = True
+        # ── المواقع (v2: حفظ تزايدي بحزم) ──
+        legacy = old.get("sites") if int(old.get("v", 1)) < 2 else None          # لقطة قديمة تحتاج ترقية
+        old_sites = {} if legacy is not None else (old.get("sites") or {})
+        old_packs = {} if legacy is not None else (old.get("packs") or {})
+        new["sites"], new["packs"], new["trash"] = old_sites, old_packs, []
+        if legacy is not None:
+            new["v"] = 1                                                          # نبقى على v1 حتى ننجح بالترقية
+            new["sites"] = legacy
+        if do_sites is not False and not (legacy is not None and not _has_files(_sites_root())):
+            sites, packs, trash, st = await SP.save_sites(
+                root=_sites_root(), old_sites=old_sites, old_packs=old_packs, io_=TgIO(bot, cid), enc=_enc, dec=_dec,
+                gen=gen, known_ids=await asyncio.to_thread(_known_site_ids), skip_names=set(S.cold) | set(S.bad), uploaded=uploaded)
+            sig, _tot = await asyncio.to_thread(_sites_sig)
+            moved = bool(st["changed"] or st["gc"] or st["removed"] or trash or st["packs_uploaded"])
+            if moved or legacy is not None:
+                new["v"] = 2
+                new["sites"], new["packs"] = sites, packs
+                legacy_mids = ([p["mid"] for p in legacy.get("parts", [])] + list(legacy.get("prev_mids", []))) if legacy else []
+                new["trash"] = list(trash) + legacy_mids
+                changed = True
+                S.stats = st
+            if st["too_big"]:
+                await _notify(bot, "⚠️ <b>مواقع أكبر من حدّ التخزين السحابي</b> (لم تُحفظ):\n"
+                              + "\n".join(f"<code>{n[:8]}…</code> {r}" for n, r in st["too_big"][:6]), "sites_big", 6 * 3600)
+        total_bytes = sum(e["size"] for e in (new.get("sites") or {}).values()) if int(new.get("v", 1)) >= 2 else 0
+        if total_bytes > TOTAL_WARN_BYTES:
+            await _notify(bot, f"⚠️ حجم أرشيف المواقع في القناة ({_fmt_size(total_bytes)}) تجاوز {_fmt_size(TOTAL_WARN_BYTES)}. "
+                               "تيليجرام لا يحدّ القناة لكن الاستعادة ستطول؛ فكّر بتقليل المواقع الكبيرة.", "total_big", 24 * 3600)
 
         if not changed:
             if ver is not None:
@@ -593,10 +743,13 @@ async def _save_locked(bot, do_db: bool, do_sites: bool | None, reason: str) -> 
             return True, "لا توجد تغييرات جديدة — اللقطة الحالية محدّثة."
 
         # ── manifest ثم تثبيته ──
-        blob = _enc(json.dumps(new, separators=(",", ":")).encode(), _MANIFEST_AAD)
+        blob = await asyncio.to_thread(_pack_manifest, new)
+        if len(blob) > 18 * 1024 * 1024:
+            raise ValueError(f"المانيفست ({_fmt_size(len(blob))}) تجاوز حدّ تنزيل تيليجرام (20MB) — عدد المواقع كبير جداً")
+        n_sites = len(new.get("sites") or {}) if int(new.get("v", 1)) >= 2 else 0
         caption = (f"💾 SAWHost snapshot · {now_iso}\n"
                    f"db: {_fmt_size((new.get('db') or {}).get('size', 0))} · "
-                   f"sites: {_fmt_size((new.get('sites') or {}).get('size', 0))} · {reason}")
+                   f"sites: {n_sites} · packs: {len(new.get('packs') or {})} · {reason}")
         mid, _fid = await _send_blob(bot, cid, MANIFEST_NAME, blob, caption)
         uploaded.append(mid)
         await _retry(lambda: bot.pin_chat_message(cid, mid, disable_notification=True))
@@ -617,11 +770,27 @@ async def _save_locked(bot, do_db: bool, do_sites: bool | None, reason: str) -> 
         S.last_sites_sig = sig
         S.last_sites_save = time.monotonic()
     pm_old = old.get("prev_manifest_id")
-    await _delete_msgs(bot, cid, del_mids + ([pm_old] if pm_old else []))
-    ci(f"تم حفظ لقطة جديدة ({reason}) — db {_fmt_size((new.get('db') or {}).get('size', 0))}, "
-       f"sites {_fmt_size((new.get('sites') or {}).get('size', 0))}")
-    return True, (f"تم الحفظ ✔ — القاعدة {_fmt_size((new.get('db') or {}).get('size', 0))}"
-                  f" · المواقع {_fmt_size((new.get('sites') or {}).get('size', 0))}")
+    await _delete_msgs(bot, cid, del_mids + list(old.get("trash", [])) + ([pm_old] if pm_old else []))
+    await _verify_pinned(bot, cid, mid, gen)
+    v2 = int(new.get("v", 1)) >= 2
+    sites_txt = (f"{len(new.get('sites') or {})} موقع · {_fmt_size(sum(e['size'] for e in (new.get('sites') or {}).values()))}"
+                 if v2 else _fmt_size((new.get("sites") or {}).get("size", 0)))
+    ci(f"تم حفظ لقطة جديدة ({reason}) — db {_fmt_size((new.get('db') or {}).get('size', 0))}, sites {sites_txt}")
+    return True, f"تم الحفظ ✔ — القاعدة {_fmt_size((new.get('db') or {}).get('size', 0))} · المواقع {sites_txt}"
+
+
+async def _verify_pinned(bot, cid: int, mid: int, gen: int) -> None:
+    """تحقق بعد الحفظ: المانيفست المثبّت في القناة هو الجديد وقابل للقراءة والفك. فشله تنبيه فقط (لا حذف لأي شيء)."""
+    try:
+        man, pmid, _t = await _read_manifest(bot, cid)
+        if not man or pmid != mid or int(man.get("gen", -1)) != gen:
+            raise IOError("المانيفست المثبّت ليس الأحدث")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        S.last_error = f"تحقق ما بعد الحفظ: {type(e).__name__}: {e}"[:300]
+        log.warning("post-save verification failed: %s", S.last_error)
+        await _notify(bot, f"⚠️ <b>تحقق ما بعد الحفظ لم ينجح</b>\n{S.last_error}\nاللقطة السابقة ما زالت محفوظة.", "verify", 3600)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -730,6 +899,8 @@ async def link_channel(bot, chat_id: int) -> tuple[bool, str]:
     S.last_db_ver = None
     S.last_sites_sig = None
     S.last_db_save = S.last_sites_save = -1e9
+    S.bot = bot
+    S.cold, S.bad = set(), {}
     ci("تم ربط قناة التخزين.")
     return True, f"تم ربط القناة «{S.channel_title or chat_id}» بنجاح."
 
@@ -738,6 +909,7 @@ async def unlink(bot) -> None:
     S.channel_id = None
     S.channel_title = ""
     S.manifest, S.manifest_mid = None, None
+    S.cold, S.bad = set(), {}
     try:
         await bot.unpin_all_chat_messages(get_cfg().admin_id)
     except Exception:
@@ -758,7 +930,12 @@ def status_text() -> str:
         state = "🟢 يعمل"
     man = S.manifest or {}
     db_sz = _fmt_size((man.get("db") or {}).get("size", 0)) if man.get("db") else "—"
-    st_sz = _fmt_size((man.get("sites") or {}).get("size", 0)) if man.get("sites") else "—"
+    if int(man.get("v", 1)) >= 2:
+        ents = man.get("sites") or {}
+        st_sz = (f"{len(ents)} موقع · {_fmt_size(sum(e['size'] for e in ents.values()))} · {len(man.get('packs') or {})} حزمة"
+                 + (f" · ❄️ {len(S.cold)} بارد" if S.cold else "") + (f" · 🔴 {len(S.bad)} تالف" if S.bad else ""))
+    else:
+        st_sz = _fmt_size((man.get("sites") or {}).get("size", 0)) if man.get("sites") else "—"
     last = man.get("ts") or "لم تُحفظ لقطة بعد"
     return ("💾 <b>التخزين السحابي (قناة تلجرام)</b>\n\n"
             f"الحالة: {state}\n"

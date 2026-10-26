@@ -1,5 +1,6 @@
 /* Saw Host — core: templating, API client, dialogs, toasts, formatting, theme.
    Every dynamic value that reaches the DOM goes through html`` (auto-escaped). */
+import "./boot.js";   // يجب أن يُقيَّم أولاً: يضمن وجود Telegram.WebApp (الرسمي أو البديل) قبل قراءة tg أدناه
 import { ic } from "./icons.js";
 export { ic };
 
@@ -34,8 +35,8 @@ const dfm = new Intl.DateTimeFormat("ar-IQ-u-nu-latn", { dateStyle: "medium" });
 const LRM = "‎";
 export const fmtDT = v => v ? dtf.format(new Date(v)) : "—";
 export const fmtD = v => v ? dfm.format(new Date(v)) : "—";
-export const fmtSize = b => LRM + (b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`) + LRM;
-export const fmtMB = mb => LRM + (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)} GB` : `${nf.format(mb)} MB`) + LRM;
+export const fmtSize = b => LRM + (b < 1024 ? `${b}\u00A0B` : b < 1048576 ? `${(b / 1024).toFixed(1)}\u00A0KB` : `${(b / 1048576).toFixed(1)}\u00A0MB`) + LRM;
+export const fmtMB = mb => LRM + (mb >= 1024 ? `${(mb / 1024).toFixed(mb >= 10240 ? 0 : 1)}\u00A0GB` : `${nf.format(mb)}\u00A0MB`) + LRM;
 export const fmtIQD = n => nf.format(n) + " د.ع";
 export const daysLeft = iso => iso ? Math.ceil((new Date(iso).getTime() - Date.now()) / 864e5) : null;
 export function ago(iso) {
@@ -59,7 +60,7 @@ export const curTheme = () => rootEl.getAttribute("data-theme") || (matchMedia("
 function paintChrome(t) {
   const c = t === "dark" ? "#09111f" : "#f3f5f9";
   const m = document.querySelector("meta[name=theme-color]"); if (m) m.setAttribute("content", c);
-  if (tg) { try { tg.setHeaderColor(c); tg.setBackgroundColor(c); } catch { /* old client */ } }
+  if (tg) { try { tg.setHeaderColor(c); tg.setBackgroundColor(c); if (tg.setBottomBarColor) tg.setBottomBarColor(c); } catch { /* old client */ } }
   $$("[data-theme-btn]").forEach(b => setHTML(b, icon(t === "dark" ? "sun" : "moon")));
 }
 export function applyTheme(t) {
@@ -69,7 +70,10 @@ export function applyTheme(t) {
 }
 export const toggleTheme = () => applyTheme(curTheme() === "dark" ? "light" : "dark");
 export const initTheme = () => {
-  try { const t = localStorage.getItem(THEME_KEY); if (t === "dark" || t === "light") rootEl.setAttribute("data-theme", t); } catch { /* ignore */ }
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch { /* ignore */ }
+  if (saved === "dark" || saved === "light") rootEl.setAttribute("data-theme", saved);
+  else if (tg && (tg.colorScheme === "dark" || tg.colorScheme === "light")) rootEl.setAttribute("data-theme", tg.colorScheme);   // أول تشغيل: نتبع مظهر تيليجرام
   paintChrome(curTheme());
 };
 
@@ -135,6 +139,7 @@ export function toast(msg, kind = "", dur = 0) {
   t.className = "toast " + kind;
   setHTML(t, html`${kind === "ok" ? icon("checkCircle", "sm") : kind === "bad" ? icon("alert", "sm") : ""}<span>${msg}</span>`);
   box.append(t);
+  if (tg && tg.HapticFeedback && (kind === "ok" || kind === "bad" || kind === "warn")) { try { tg.HapticFeedback.notificationOccurred(kind === "ok" ? "success" : kind === "warn" ? "warning" : "error"); } catch { /* old client */ } }
   setTimeout(() => t.remove(), dur || (kind === "bad" || kind === "warn" ? 6000 : 3000));
   return t;
 }

@@ -121,6 +121,14 @@ class RateLimitMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 
+def push_mode() -> bool:
+    """وضع الدفع المباشر: متاح عند Polling (GitHub Actions) أو عند NOTIF_PUSH=1. الحقن (Piggyback) مخصص لبيئات تمنع الاتصال الصادر."""
+    import os
+    if os.getenv("NOTIF_PUSH") in ("0", "false"):
+        return False
+    return os.getenv("RUN_MODE") == "actions" or os.getenv("NOTIF_PUSH") in ("1", "true")
+
+
 class LiveNotifMiddleware(BaseMiddleware):
     """
     حقن مباشر وفوري (Piggyback حقيقي) لأحدث الإشعارات غير المقروءة داخل
@@ -138,6 +146,8 @@ class LiveNotifMiddleware(BaseMiddleware):
 
     async def __call__(self, handler: Callable, event: TelegramObject, data: dict) -> Any:
         result = await handler(event, data)
+        if push_mode():                 # الإشعارات تصل كرسائل منفصلة (notify.run_notif_pusher) ولا تُحقن في رد البوت
+            return result
         user = data.get("user")
         if not user or not user.is_admin:
             return result

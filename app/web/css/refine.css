@@ -1,0 +1,151 @@
+/* Saw Host — refine.css  (يُحمَّل أخيراً)
+   إصلاحات مؤكَّدة بالاختبار على أحجام حقيقية + طبقة صقل بصري للهاتف وتيليجرام وكل الأجهزة.
+   لا يغيّر منطق أي شاشة: كله فوق نظام التصميم الحالي (tokens/base/ui/shell/pages). */
+
+/* ───────── 1) أساسيات الأمان البصري ───────── */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-padding-top: 76px; }
+html, body { overflow-x: clip; max-width: 100%; }
+body { overscroll-behavior-y: contain; -webkit-tap-highlight-color: transparent; font-synthesis: none; text-rendering: optimizeLegibility; }
+img, svg, video, canvas { max-width: 100%; }
+a, button, [role="button"], .btn, .tabs a, .tabbar a { touch-action: manipulation; }
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--r-xs); }
+.mono, code, kbd, .url, [dir="ltr"] { unicode-bidi: isolate; }           /* الأرقام والروابط لا تُربك اتجاه الجملة */
+.nowrap, .unit { white-space: nowrap; }
+
+/* منطقة آمنة + قياسات تيليجرام (يضبطها tgapp.js) */
+:root {
+  --sa-top: max(env(safe-area-inset-top, 0px), var(--tg-safe-top, 0px));
+  --sa-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-bottom, 0px));
+  --vh-app: 100dvh;
+}
+html.in-tg { --vh-app: var(--tg-vh, 100dvh); }
+html.in-tg body { min-height: var(--vh-app); }
+
+/* ───────── 2) إصلاح: التمرير الأفقي على هواتف 360px (الهيدر العام كان أعرض بـ 16px) ───────── */
+.pub-nav .in { min-width: 0; }
+.pub-nav .brand { min-width: 0; }
+.pub-nav .brand b { white-space: nowrap; }
+@media (max-width: 430px) {
+  .pub-nav .in { gap: 8px; padding-inline: 12px; }
+  .pub-nav .brand { gap: 8px; }
+  .pub-nav .brand b { font-size: 15px; }
+  .pub-nav .brand img { width: 30px; height: 30px; }
+  .pub-nav .end { gap: 6px; }
+  .pub-nav .end .btn { padding-inline: 11px; font-size: 13px; min-height: 36px; }
+}
+@media (max-width: 370px) { .pub-nav .end .btn.ghost { display: none; } }   /* "دخول" موجودة في الصفحة نفسها */
+#toasts { max-inline-size: 100vw; }
+
+/* ───────── 3) إصلاح: ظلّ الدرج الجانبي كان يظهر كشريط على حافة الشاشة وهو مغلق ───────── */
+@media (max-width: 900px) {
+  .side { box-shadow: none; visibility: hidden; transition: transform .28s var(--ease), box-shadow .28s var(--ease), visibility 0s linear .28s; }
+  body.nav-open .side { box-shadow: var(--shadow-dialog); visibility: visible; transition-delay: 0s; }
+}
+
+/* ───────── 4) إصلاح: حقول البحث (كانت بلا فئة .input فتتداخل الأيقونة مع النص) ───────── */
+.searchfield input, .searchfield input[type="search"], .searchfield input[type="text"] {
+  width: 100%; min-height: 42px; padding: 9px 12px; padding-inline-start: 40px; font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r-md); transition: border-color .15s, box-shadow .15s;
+  -webkit-appearance: none; appearance: none;
+}
+.searchfield input::placeholder { color: var(--faint); }
+.searchfield input:hover { border-color: var(--faint); }
+.searchfield input:focus { border-color: var(--primary); box-shadow: var(--focus); outline: none; }
+.searchfield input::-webkit-search-cancel-button { display: none; }
+.searchfield > svg { z-index: 1; }
+
+/* ───────── 5) حقول النماذج: 16px كي لا يكبّر iOS الصفحة عند التركيز + أهداف لمس مريحة ───────── */
+@media (pointer: coarse) {
+  .input, .select, .textarea, .searchfield input { font-size: 16px; min-height: 46px; }
+  .btn { min-height: 44px; }
+  .btn.sm { min-height: 38px; }
+  .iconbtn { min-width: 44px; min-height: 44px; }
+  .tabs a, .tabs button { min-height: 46px; }
+}
+
+/* ───────── 6) تبويبات قابلة للتمرير مع تلميح بصري وتثبيت (لا نصف تبويب مقطوع بلا تلميح) ───────── */
+.tabs { scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; position: relative;
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%);
+          mask-image: linear-gradient(to right, transparent 0, #000 22px, #000 calc(100% - 22px), transparent 100%); }
+.tabs > * { scroll-snap-align: center; flex: 0 0 auto; }
+@media (min-width: 901px) { .tabs { -webkit-mask-image: none; mask-image: none; } }
+
+/* ───────── 7) أرقام وحدات لا تنفصل ───────── */
+.stat .v, .stat .sub, .stat small, .bar-meta, .usage { font-variant-numeric: tabular-nums; }
+.stat .sub, .stat small { overflow-wrap: anywhere; }
+
+/* ───────── 8) صقل الأسطح: بطاقات، ظلال، حركة ───────── */
+.card, .stat { box-shadow: 0 1px 2px rgba(10, 22, 40, .04); transition: box-shadow .2s var(--ease), border-color .2s var(--ease), transform .2s var(--ease); }
+@media (hover: hover) {
+  .card:hover, .stat:hover { box-shadow: 0 6px 20px rgba(10, 22, 40, .07); }
+  a.card:hover, .rowlink:hover { border-color: var(--primary-line); }
+}
+@media (hover: none) { a.card:active, .rowlink:active, .btn:active { transform: scale(.985); } }
+.btn { transition: background-color .15s, border-color .15s, box-shadow .15s, transform .12s var(--ease), color .15s; }
+.btn.primary, .btn:not(.ghost):not(.quiet):not(.danger):not(.ok) { box-shadow: 0 1px 0 rgba(255, 255, 255, .18) inset, 0 4px 12px -4px color-mix(in srgb, var(--primary) 55%, transparent); }
+.btn.ghost, .btn.quiet, .btn.danger { box-shadow: none; }
+
+/* ───────── 9) الهيكل على الهاتف: زجاج للشريط العلوي والسفلي + أمان الحواف ───────── */
+@media (max-width: 900px) {
+  .topbar { position: sticky; top: 0; z-index: 40; padding-top: var(--sa-top);
+    background: color-mix(in srgb, var(--surface) 86%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(14px); backdrop-filter: saturate(1.4) blur(14px); }
+  .tabbar { height: calc(var(--tab-h) + var(--sa-bottom)); padding-bottom: var(--sa-bottom);
+    background: color-mix(in srgb, var(--surface) 90%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(16px); backdrop-filter: saturate(1.4) blur(16px);
+    box-shadow: 0 -6px 24px -12px rgba(10, 22, 40, .18); }
+  .tabbar a, .tabbar button { min-height: 52px; transition: color .15s, transform .12s var(--ease); }
+  .tabbar a:active, .tabbar button:active { transform: scale(.94); }
+  .tabbar [aria-current="page"] { position: relative; }
+  .tabbar [aria-current="page"]::before { content: ""; position: absolute; top: 0; width: 26px; height: 3px; border-radius: 0 0 4px 4px; background: var(--primary); }
+  .tabbar .fab i { background: linear-gradient(145deg, color-mix(in srgb, var(--primary) 82%, #fff), var(--primary)); box-shadow: 0 8px 20px -6px color-mix(in srgb, var(--primary) 70%, transparent); }
+  .view { padding-bottom: calc(var(--tab-h) + var(--sa-bottom) + 28px); padding-inline: 14px; }
+  .page-head { gap: 10px; }
+  .page-head h1 { font-size: 21px; line-height: 1.35; }
+  .grid-2, .grid-3 { gap: 12px; }
+}
+@media (max-width: 380px) { .view { padding-inline: 10px; } .stat { padding: 14px; } .stat .v { font-size: 24px; } }
+
+/* ───────── 10) النوافذ على الهاتف: ورقة سفلية (Bottom Sheet) بدل مربع في المنتصف ───────── */
+@media (max-width: 640px) {
+  .dlg:not(.drawer) {
+    inset: auto 0 0 0; margin: 0 auto; width: 100vw; max-width: 100vw; max-height: min(92dvh, calc(var(--vh-app) - 12px));
+    border-radius: var(--r-xl) var(--r-xl) 0 0; border-width: 1px 0 0 0; animation: sheet-up .26s var(--ease);
+    padding-bottom: var(--sa-bottom);
+  }
+  .dlg:not(.drawer)::before { content: ""; display: block; width: 40px; height: 4px; border-radius: 4px; background: var(--line-strong); margin: 8px auto 0; flex: none; }
+  .dlg:not(.drawer) .dlg-head { padding: 10px 18px 12px; }
+  .dlg-body { padding: 16px 18px; }
+  .dlg-foot { padding: 12px 18px; flex-wrap: wrap; border-radius: 0; }
+  .dlg-foot .btn { flex: 1 1 130px; justify-content: center; }
+  .dlg.drawer { width: 100vw; }
+}
+@keyframes sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* ───────── 11) واجهة الملفات والمحرر على الهاتف ───────── */
+@media (max-width: 900px) {
+  .ide { display: flex; flex-direction: column; border-radius: var(--r-lg); }
+  .ide-side { max-height: none; border-inline-end: 0; border-bottom: 1px solid var(--line); }
+  .ide-side .ide-list, .ide-list { max-height: 34dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .ide.has-file .ide-side { max-height: 0; overflow: hidden; border: 0; }             /* ملف مفتوح: المحرر يأخذ الشاشة */
+  .ide.has-file.show-side .ide-side { max-height: 46dvh; overflow: auto; border-bottom: 1px solid var(--line); }
+  .ide-main { min-height: 62dvh; }
+  .ide-bar { position: sticky; top: calc(var(--top-h) + var(--sa-top)); z-index: 5; background: var(--surface-2); flex-wrap: wrap; gap: 6px; }
+  .ide-toggle { display: inline-flex !important; }
+}
+.ide-toggle { display: none; }
+
+/* ───────── 12) عناصر القوائم: ترتيب ونص طويل لا يكسر التخطيط ───────── */
+.rowlink, .list > * { min-width: 0; }
+.rowlink .t, .rowlink b, .site-name { overflow: hidden; text-overflow: ellipsis; }
+.badge, .pill, .chip { white-space: nowrap; }
+pre, code { overflow-wrap: anywhere; }
+table { max-width: 100%; }
+.tablewrap, .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ───────── 13) شاشة الإقلاع الأولى ───────── */
+.boot { background: var(--bg); }
+.boot img { box-shadow: 0 10px 30px -10px rgba(31, 95, 224, .5); animation: boot-float 2.4s ease-in-out infinite; }
+@keyframes boot-float { 50% { transform: translateY(-4px); } }
+
+/* ───────── 14) تقليل الحركة + الطباعة ───────── */
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; } }
+@media print { .side, .topbar, .tabbar, #toasts { display: none !important; } .view { padding: 0; } }

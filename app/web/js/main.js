@@ -3,8 +3,10 @@ import {
   $, $$, html, raw, setHTML, icon, state, api, post, go, tg, isMini, toast, fail, initTheme, toggleTheme, curTheme,
   menuAt, openDialog, avatar, nf, daysLeft, bar, loadingBlock, errorBlock, debounce, openExt, confirmBox,
 } from "./core.js";
+import { initTelegram, syncBack } from "./tgapp.js";
 
 initTheme();
+initTelegram();   // ready/expand فوراً (كان بعد طلب الدخول فيبقى المستخدم بنصف شاشة لثوانٍ)
 const app = $("#app");
 let ctxSeq = 0, current = null;
 
@@ -65,6 +67,7 @@ async function render() {
   endCtx();
   document.body.classList.remove("nav-open");
   const { path, q } = parseHash();
+  syncBack(path);
   // داخل تيليجرام: هوية initData الموقَّعة هي المرجع دائماً، فلا نعتمد على كوكي قديم قد يخص حساباً آخر
   if (tg && !state.triedTg) { state.triedTg = true; state.me = null; if (await tryTelegramLogin()) await loadMe(); }
   if (!state.me) await loadMe();
